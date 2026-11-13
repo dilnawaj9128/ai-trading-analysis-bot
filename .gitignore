@@ -7,3 +7,22 @@ __pycache__/
 logs/*.log
 *.db
 
+
+# Local development backups
+*.bak
+*.backup
+*.before_*
+*.pre_*
+*.stage47j_backup
+*_backup
+
+# Python
+__pycache__/
+.pytest_cache/
+*.pyc
+venv/
+
+# Local credentials
+.env
+.env.*
+!.env.example
