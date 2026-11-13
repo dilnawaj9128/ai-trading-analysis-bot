@@ -1,0 +1,80 @@
+"""Research-only multi-window Twelve Data historical dataset collection."""
+from __future__ import annotations
+
+import math
+from pathlib import Path
+
+import pandas as pd
+
+from market_data.historical_collector import (
+    MAX_HISTORY_BATCH, _utc, fetch_historical_candles, save_historical_csv,
+)
+from market_data.twelve_data_client import INTERVAL_SECONDS, MarketDataError, utc_now
+
+
+def plan_batches(*, start, end, interval, batch_candles=1000):
+    if interval not in INTERVAL_SECONDS:
+        raise ValueError('Unsupported interval')
+    if type(batch_candles) is not int or not 2 <= batch_candles <= MAX_HISTORY_BATCH:
+        raise ValueError('Invalid batch_candles')
+    start, end = _utc(start, 'start'), _utc(end, 'end')
+    step = pd.Timedelta(seconds=INTERVAL_SECONDS[interval])
+    if start >= end or start.value % step.value or end.value % step.value:
+        raise ValueError('Invalid or unaligned historical range')
+    batch_width = step * batch_candles
+    batches = []
+    cursor = start
+    while cursor < end:
+        nxt = min(cursor + batch_width, end)
+        batches.append((cursor, nxt))
+        cursor = nxt
+    return batches
+
+
+def collect_dataset(config, *, start, end, output_path, api_key=None,
+                    state_path=None, now=None, session=None,
+                    batch_candles=1000, max_requests=30):
+    """Fetch bounded UTC windows; fail closed on truncation or invalid data.
+
+    Caller must provide a fresh output path. Partial data is not saved on error.
+    A request can still consume credits even when it returns no candles.
+    """
+    if type(max_requests) is not int or max_requests < 1:
+        raise ValueError('Invalid max_requests')
+    output_path = Path(output_path)
+    if output_path.exists():
+        raise FileExistsError(output_path)
+    now = _utc(now if now is not None else utc_now(), 'now')
+    start, end = _utc(start, 'start'), _utc(end, 'end')
+    step = pd.Timedelta(seconds=INTERVAL_SECONDS[config.timeframe])
+    if end > now.floor(f'{INTERVAL_SECONDS[config.timeframe]}s'):
+        raise ValueError('Requested range contains incomplete candles')
+    batches = plan_batches(start=start, end=end, interval=config.timeframe,
+                           batch_candles=batch_candles)
+    if len(batches) > max_requests:
+        raise ValueError(f'Planned {len(batches)} requests exceeds max_requests={max_requests}')
+
+    pieces = []
+    for batch_start, batch_end in batches:
+        kwargs = dict(start=batch_start, end=batch_end, api_key=api_key,
+                      now=now, session=session, outputsize=batch_candles)
+        if state_path is not None:
+            kwargs['state_path'] = state_path
+        result = fetch_historical_candles(config, **kwargs)
+        if result['possibly_truncated']:
+            raise MarketDataError('Batch may be truncated; refusing incomplete dataset')
+        pieces.append(result['frame'])
+
+    frame = pd.concat(pieces, ignore_index=True).sort_values('timestamp').reset_index(drop=True)
+    if frame.empty or frame['timestamp'].duplicated().any():
+        raise MarketDataError('Empty dataset or duplicate candle timestamps')
+    timestamps = pd.to_datetime(frame['timestamp'], utc=True)
+    if (timestamps < start).any() or (timestamps >= end).any():
+        raise MarketDataError('Dataset contains out-of-range candles')
+    gaps = int((timestamps.diff().dropna() > step).sum())
+    save_historical_csv(frame, output_path)
+    return {'path': output_path, 'frame': frame, 'candles': len(frame),
+            'requests': len(batches), 'gaps': gaps,
+            'first_utc': timestamps.iloc[0].isoformat(),
+            'last_utc': timestamps.iloc[-1].isoformat(),
+            'analysis_only': True, 'execution_enabled': False}

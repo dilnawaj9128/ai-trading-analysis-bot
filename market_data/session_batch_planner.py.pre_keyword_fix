@@ -1,0 +1,46 @@
+"""Plan historical API batches around standard FX weekly sessions."""
+
+import pandas as pd
+
+from market_data.market_calendar import split_forex_open_windows
+from market_data.historical_dataset_builder import plan_batches
+
+
+def plan_session_batches(
+    start,
+    end,
+    interval="1min",
+    batch_candles=400,
+):
+    if type(batch_candles) is not int or not 2 <= batch_candles <= 4999:
+        raise ValueError("Invalid batch_candles")
+
+    start = pd.Timestamp(start)
+    end = pd.Timestamp(end)
+
+    if start.tzinfo is None or end.tzinfo is None:
+        raise ValueError("Timezone-aware timestamps required")
+
+    start = start.tz_convert("UTC")
+    end = end.tz_convert("UTC")
+
+    if start >= end:
+        raise ValueError("Invalid window")
+
+    segments = split_forex_open_windows(
+        start, end, interval
+    )
+
+    batches = []
+
+    for segment_start, segment_end in segments:
+        batches.extend(
+            plan_batches(
+                segment_start,
+                segment_end,
+                interval,
+                batch_candles=batch_candles,
+            )
+        )
+
+    return batches

@@ -1,0 +1,69 @@
+"""Safely persist provider credits observed in HTTP responses.
+
+No network calls or trading execution.
+"""
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+from market_data.api_credit_monitor import parse_credit_headers
+from market_data.provider_credit_state import (
+    DEFAULT_PATH,
+    save_credit_state,
+)
+
+
+@dataclass(frozen=True)
+class CreditRefreshResult:
+    updated: bool
+    credits_left: int | None
+    reason: str
+
+
+def refresh_credits_from_response(
+    response,
+    *,
+    path=DEFAULT_PATH,
+    now=None,
+) -> CreditRefreshResult:
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    headers = getattr(response, "headers", None)
+
+    # Missing headers must never overwrite a valid snapshot.
+    if headers is None:
+        return CreditRefreshResult(
+            updated=False,
+            credits_left=None,
+            reason="Response headers unavailable",
+        )
+
+    try:
+        snapshot = parse_credit_headers(headers)
+    except (TypeError, AttributeError):
+        return CreditRefreshResult(
+            updated=False,
+            credits_left=None,
+            reason="Invalid response headers",
+        )
+
+    # credits_used alone cannot authorize a future request.
+    if snapshot.credits_left is None:
+        return CreditRefreshResult(
+            updated=False,
+            credits_left=None,
+            reason="Provider remaining credits unavailable",
+        )
+
+    save_credit_state(
+        snapshot,
+        path=path,
+        now=now,
+    )
+
+    return CreditRefreshResult(
+        updated=True,
+        credits_left=snapshot.credits_left,
+        reason="Provider credit snapshot updated",
+    )

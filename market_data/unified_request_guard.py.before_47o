@@ -1,0 +1,126 @@
+"""Conservative local provider-credit reservations.
+
+Provider-reported balances remain unchanged by authorization.
+No HTTP calls or trading execution.
+"""
+
+import fcntl
+import json
+import os
+import tempfile
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+from market_data.pre_request_credit_gate import check_before_request
+from market_data.provider_credit_guard import ProviderCreditLimitReached
+from market_data.provider_credit_state import DEFAULT_PATH
+from market_data.twelve_data_client import STATE_PATH, reserve_request
+
+
+@dataclass(frozen=True)
+class RequestAuthorization:
+    authorized: bool
+    provider_credits_remaining: int
+    local_budget_reserved: bool
+
+
+def _save_json_atomic(path, payload):
+    temporary = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            dir=path.parent,
+            prefix=".reservations_",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(payload, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        os.replace(temporary, path)
+
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def authorize_request(
+    *,
+    provider_state_path=DEFAULT_PATH,
+    local_budget_path=STATE_PATH,
+    now=None,
+    required_credits=1,
+    reserve_credits=20,
+    max_age_seconds=300,
+):
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    if now.tzinfo is None:
+        raise ValueError("Timezone-aware datetime required")
+
+    provider_path = Path(provider_state_path)
+
+    lock_path = provider_path.with_name(
+        provider_path.name + ".lock"
+    )
+    ledger_path = provider_path.with_name(
+        provider_path.name + ".reservations.json"
+    )
+
+    provider_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(lock_path, "a+b") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+
+        try:
+            decision = check_before_request(
+                path=provider_path,
+                now=now,
+                required_credits=required_credits,
+                reserve_credits=reserve_credits,
+                max_age_seconds=max_age_seconds,
+            )
+
+            if ledger_path.exists():
+                ledger = json.loads(ledger_path.read_text())
+                if (
+                    type(ledger) is not dict
+                    or ledger.get("version") != 1
+                    or type(ledger.get("reserved")) is not int
+                    or ledger["reserved"] < 0
+                ):
+                    raise ValueError("Invalid reservation ledger")
+            else:
+                ledger = {"version": 1, "reserved": 0}
+
+            reserved = ledger["reserved"]
+
+            available = decision.remaining_credits - reserved
+
+            if available < required_credits + reserve_credits:
+                raise ProviderCreditLimitReached(
+                    "Insufficient credits after local reservations"
+                )
+
+            # Reserve local request budget before committing ledger.
+            reserve_request(
+                path=local_budget_path,
+                now=now,
+            )
+
+            ledger["reserved"] = reserved + required_credits
+            _save_json_atomic(ledger_path, ledger)
+
+            return RequestAuthorization(
+                authorized=True,
+                provider_credits_remaining=available - required_credits,
+                local_budget_reserved=True,
+            )
+
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)

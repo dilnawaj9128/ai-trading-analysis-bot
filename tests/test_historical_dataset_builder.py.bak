@@ -1,0 +1,81 @@
+
+from datetime import datetime, timezone
+
+import pandas as pd
+import pytest
+
+from market_data import historical_dataset_builder as builder
+
+
+def test_batch_windows_do_not_overlap():
+    start = pd.Timestamp("2026-01-01T00:00:00Z")
+    end = pd.Timestamp("2026-01-01T01:00:00Z")
+
+    windows = builder.plan_batches(
+        start=start,
+        end=end,
+        interval="1min",
+        batch_candles=20,
+    )
+
+    assert len(windows) == 3
+    assert windows[0][0] == start
+    assert windows[-1][1] == end
+    assert all(
+        windows[i][1] == windows[i + 1][0]
+        for i in range(len(windows) - 1)
+    )
+
+
+def test_invalid_batch_size_rejected():
+    with pytest.raises(ValueError):
+        builder.plan_batches(
+            start="2026-01-01T00:00:00Z",
+            end="2026-01-01T01:00:00Z",
+            interval="1min",
+            batch_candles=0,
+        )
+
+
+def test_unaligned_range_rejected():
+    with pytest.raises(ValueError):
+        builder.plan_batches(
+            start="2026-01-01T00:00:30Z",
+            end="2026-01-01T01:00:00Z",
+            interval="1min",
+            batch_candles=20,
+        )
+
+
+def test_batch_count_limit():
+    with pytest.raises(ValueError):
+        builder.plan_batches(
+            start="2026-01-01T00:00:00Z",
+            end="2026-01-02T00:00:00Z",
+            interval="1min",
+            batch_candles=10,
+            max_batches=2,
+        )
+
+
+def test_save_does_not_overwrite(tmp_path):
+    frame = pd.DataFrame({
+        "timestamp": pd.date_range(
+            "2026-01-01",
+            periods=3,
+            freq="min",
+            tz="UTC",
+        ),
+        "Open": [100.0, 101.0, 102.0],
+        "High": [102.0, 103.0, 104.0],
+        "Low": [99.0, 100.0, 101.0],
+        "Close": [101.0, 102.0, 103.0],
+    })
+
+    path = tmp_path / "history.csv"
+
+    builder.save_dataset(frame, path)
+
+    with pytest.raises(FileExistsError):
+        builder.save_dataset(frame, path)
+

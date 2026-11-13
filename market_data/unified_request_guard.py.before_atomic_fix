@@ -1,0 +1,55 @@
+"""Unified pre-request guard for research data acquisition.
+
+Checks provider credit state before reserving local request budget.
+Does not perform HTTP requests.
+"""
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+from market_data.pre_request_credit_gate import check_before_request
+from market_data.provider_credit_state import DEFAULT_PATH
+from market_data.twelve_data_client import (
+    STATE_PATH,
+    reserve_request,
+)
+
+
+@dataclass(frozen=True)
+class RequestAuthorization:
+    authorized: bool
+    provider_credits_remaining: int
+    local_budget_reserved: bool
+
+
+def authorize_request(
+    *,
+    provider_state_path=DEFAULT_PATH,
+    local_budget_path=STATE_PATH,
+    now=None,
+    required_credits=1,
+    reserve_credits=20,
+    max_age_seconds=300,
+):
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    decision = check_before_request(
+        path=provider_state_path,
+        now=now,
+        required_credits=required_credits,
+        reserve_credits=reserve_credits,
+        max_age_seconds=max_age_seconds,
+    )
+
+    # Reserve local budget only after provider credit check succeeds.
+    reserve_request(
+        path=local_budget_path,
+        now=now,
+    )
+
+    return RequestAuthorization(
+        authorized=True,
+        provider_credits_remaining=decision.remaining_credits,
+        local_budget_reserved=True,
+    )

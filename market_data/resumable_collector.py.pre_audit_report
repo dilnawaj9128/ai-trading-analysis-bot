@@ -1,0 +1,320 @@
+"""Resumable, validated historical collection. Research only."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import tempfile
+from pathlib import Path
+
+import pandas as pd
+
+from market_data.api_retry import fetch_with_retry
+from market_data.market_calendar import (
+    split_forex_open_windows,
+)
+
+from market_data.session_batch_planner import plan_session_batches
+from market_data.historical_collector import (
+    fetch_historical_candles,
+    _utc,
+)
+from market_data.twelve_data_client import (
+    INTERVAL_SECONDS,
+    MarketDataError,
+    utc_now,
+)
+
+
+def validate_batch(frame, start, end, interval, *, require_complete=False):
+    """Validate a saved or newly downloaded candle batch."""
+    required = {"timestamp", "Open", "High", "Low", "Close"}
+
+    if not isinstance(frame, pd.DataFrame):
+        raise MarketDataError("Batch must be a DataFrame")
+
+    if frame.empty or not required.issubset(frame.columns):
+        raise MarketDataError("Empty or invalid checkpoint")
+
+    data = frame.copy()
+
+    try:
+        data["timestamp"] = pd.to_datetime(
+            data["timestamp"], utc=True, errors="raise"
+        )
+        for column in ("Open", "High", "Low", "Close"):
+            data[column] = pd.to_numeric(data[column], errors="raise")
+    except (ValueError, TypeError) as exc:
+        raise MarketDataError("Invalid checkpoint values") from exc
+
+    if data["timestamp"].isna().any():
+        raise MarketDataError("Missing timestamps")
+
+    if data["timestamp"].duplicated().any():
+        raise MarketDataError("Duplicate timestamps")
+
+    if not data["timestamp"].is_monotonic_increasing:
+        raise MarketDataError("Unsorted timestamps")
+
+    step = pd.Timedelta(seconds=INTERVAL_SECONDS[interval])
+
+    if (
+        (data["timestamp"] < start).any()
+        or (data["timestamp"] >= end).any()
+    ):
+        raise MarketDataError("Checkpoint outside requested window")
+
+    if not data["timestamp"].eq(data["timestamp"].dt.floor(
+        f"{INTERVAL_SECONDS[interval]}s"
+    )).all():
+        raise MarketDataError("Unaligned timestamps")
+
+    prices = data[["Open", "High", "Low", "Close"]]
+
+    import numpy as np
+
+    if not np.isfinite(prices.to_numpy(dtype=float)).all():
+        raise MarketDataError("Non-finite prices")
+
+    if (prices <= 0).any().any():
+        raise MarketDataError("Non-positive prices")
+
+    if (
+        (data["High"] < data[["Open", "Close", "Low"]].max(axis=1)).any()
+        or (data["Low"] > data[["Open", "Close", "High"]].min(axis=1)).any()
+    ):
+        raise MarketDataError("Invalid OHLC relationships")
+
+    if require_complete:
+        expected = pd.date_range(
+            start=start,
+            end=end,
+            freq=step,
+            inclusive="left",
+        )
+
+        actual = pd.DatetimeIndex(data["timestamp"])
+        missing = expected.difference(actual)
+
+        if len(missing):
+            raise MarketDataError(
+                f"Incomplete batch: {len(missing)} missing candles; "
+                f"first missing timestamp: {missing[0]}"
+            )
+
+    return data
+
+
+def atomic_csv_save(frame, path):
+    """Write a complete CSV before atomically publishing it."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    fd, temporary = tempfile.mkstemp(
+        prefix=".partial_",
+        suffix=".csv",
+        dir=path.parent,
+    )
+
+    try:
+        with os.fdopen(fd, "w") as handle:
+            frame.to_csv(handle, index=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        os.replace(temporary, path)
+
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def collect_resumable(
+    config, *, start, end, output_dir,
+    batch_candles=400, max_requests=200,
+):
+    if type(max_requests) is not int or max_requests < 1:
+        raise ValueError("Invalid max_requests")
+
+    if type(batch_candles) is not int or not 2 <= batch_candles < 5000:
+        raise ValueError("Invalid batch_candles")
+
+    start = _utc(start, "start")
+    end = _utc(end, "end")
+    now = _utc(utc_now(), "now")
+
+    if config.timeframe not in INTERVAL_SECONDS:
+        raise ValueError("Unsupported timeframe")
+
+    step = pd.Timedelta(seconds=INTERVAL_SECONDS[config.timeframe])
+
+    if end > now.floor(f"{INTERVAL_SECONDS[config.timeframe]}s"):
+        raise ValueError("Requested range includes incomplete candles")
+
+    batches = plan_session_batches(
+        start=start,
+        end=end,
+        interval=config.timeframe,
+        batch_candles=batch_candles,
+    )
+
+    manifest = {
+        "planner_version": "forex-session-v1",
+        "symbol": config.symbol,
+        "timeframe": config.timeframe,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "batch_candles": batch_candles,
+    }
+
+    fingerprint = hashlib.sha256(
+        json.dumps(manifest, sort_keys=True).encode()
+    ).hexdigest()[:16]
+
+    job_dir = Path(output_dir) / fingerprint
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    manifest_path = job_dir / "manifest.json"
+
+    if manifest_path.exists():
+        existing = json.loads(manifest_path.read_text())
+        if existing != manifest:
+            raise MarketDataError("Manifest mismatch")
+    else:
+        temporary_manifest = manifest_path.with_suffix(".tmp")
+        temporary_manifest.write_text(json.dumps(manifest, indent=2))
+        os.replace(temporary_manifest, manifest_path)
+
+    new_requests = 0
+    cached_batches = 0
+    frames = []
+
+    for index, (batch_start, batch_end) in enumerate(batches):
+        path = job_dir / f"batch_{index:05d}.csv"
+
+        open_windows = split_forex_open_windows(
+            batch_start, batch_end, config.timeframe
+        )
+
+        if not open_windows:
+            print(
+                f"Batch {index + 1}/{len(batches)}: "
+                "Forex weekly closure skipped"
+            )
+            continue
+
+        if len(open_windows) != 1:
+            raise MarketDataError(
+                "Multiple open segments require separate checkpoints"
+            )
+
+        batch_start, batch_end = open_windows[0]
+
+        was_cached = path.exists()
+
+        if was_cached:
+            frame = validate_batch(
+                pd.read_csv(path),
+                batch_start,
+                batch_end,
+                config.timeframe,
+                require_complete=True,
+            )
+            cached_batches += 1
+
+        else:
+            if new_requests >= max_requests:
+                raise MarketDataError(
+                    f"New API request budget exhausted: {max_requests}"
+                )
+
+            # Count each fetch attempt, including failed attempts.
+            def counted_fetch():
+                nonlocal new_requests
+
+                if new_requests >= max_requests:
+                    raise MarketDataError(
+                        f"New API request budget exhausted: {max_requests}"
+                    )
+
+                new_requests += 1
+
+                return fetch_historical_candles(
+                    config,
+                    start=batch_start,
+                    end=batch_end,
+                    outputsize=batch_candles + 1,
+                )
+
+            result = fetch_with_retry(
+                counted_fetch,
+                max_attempts=min(3, max_requests - new_requests),
+                wait_seconds=65,
+            )
+
+            if result["possibly_truncated"]:
+                raise MarketDataError(
+                    f"Batch {index} possibly truncated"
+                )
+
+            frame = validate_batch(
+                result["frame"],
+                batch_start,
+                batch_end,
+                config.timeframe,
+                require_complete=True,
+            )
+
+            atomic_csv_save(frame, path)
+
+        frames.append(frame)
+
+        print(
+            f"Batch {index + 1}/{len(batches)}: "
+            f"{len(frame)} candles "
+            f"({'cached' if was_cached else 'downloaded'})"
+        )
+
+    if not frames:
+        raise MarketDataError(
+            "No trading candles collected; all windows may be closed"
+        )
+
+    combined = pd.concat(frames, ignore_index=True)
+    combined = combined.sort_values("timestamp").reset_index(drop=True)
+
+    if combined["timestamp"].duplicated().any():
+        raise MarketDataError("Duplicate combined timestamps")
+
+    gaps = int((combined["timestamp"].diff() > step).sum())
+
+    from analysis.historical_integrity_audit import audit_forex_dataset
+
+    audit = audit_forex_dataset(
+        combined,
+        start=start,
+        end=end,
+        interval=config.timeframe,
+    )
+
+    if not audit["complete"]:
+        raise MarketDataError(
+            "Historical integrity audit failed: "
+            f"{audit['missing_open_candles']} missing open candles, "
+            f"{audit['unexpected_closed_candles']} unexpected closed candles"
+        )
+
+    final_path = job_dir / "combined.csv"
+    atomic_csv_save(combined, final_path)
+
+    return {
+        "path": final_path,
+        "candles": len(combined),
+        "gaps": gaps,
+        "completed_batches": len(batches),
+        "cached_batches": cached_batches,
+        "new_requests": new_requests,
+        "analysis_only": True,
+        "execution_enabled": False,
+    }

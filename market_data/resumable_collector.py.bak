@@ -1,0 +1,125 @@
+"""Resumable historical collection with per-batch checkpoints.
+
+Research only. Does not execute trades.
+"""
+from pathlib import Path
+import hashlib
+import json
+import pandas as pd
+
+from market_data.historical_dataset_builder import plan_batches
+from market_data.historical_collector import fetch_historical_candles
+from market_data.twelve_data_client import INTERVAL_SECONDS
+
+
+def collect_resumable(
+    config, *, start, end, output_dir,
+    batch_candles=400, max_requests=200,
+):
+    if type(max_requests) is not int or max_requests < 1:
+        raise ValueError("Invalid max_requests")
+
+    if type(batch_candles) is not int or not 2 <= batch_candles <= 4999:
+        raise ValueError("Invalid batch_candles")
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    batches = plan_batches(
+        start=start,
+        end=end,
+        interval=config.timeframe,
+        batch_candles=batch_candles,
+    )
+
+    if len(batches) > max_requests:
+        raise ValueError(
+            f"Planned {len(batches)} batches exceeds max_requests={max_requests}"
+        )
+
+    manifest = {
+        "symbol": config.symbol,
+        "timeframe": config.timeframe,
+        "start": pd.Timestamp(start).isoformat(),
+        "end": pd.Timestamp(end).isoformat(),
+        "batch_candles": batch_candles,
+    }
+
+    fingerprint = hashlib.sha256(
+        json.dumps(manifest, sort_keys=True).encode()
+    ).hexdigest()[:16]
+
+    job_dir = output_dir / fingerprint
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    manifest_path = job_dir / "manifest.json"
+
+    if manifest_path.exists():
+        existing = json.loads(manifest_path.read_text())
+        if existing != manifest:
+            raise ValueError("Checkpoint manifest mismatch")
+    else:
+        manifest_path.write_text(json.dumps(manifest, indent=2))
+
+    new_requests = 0
+    completed = 0
+
+    for index, (batch_start, batch_end) in enumerate(batches):
+        path = job_dir / f"batch_{index:05d}.csv"
+
+        if path.exists():
+            completed += 1
+            continue
+
+        result = fetch_historical_candles(
+            config,
+            start=batch_start,
+            end=batch_end,
+            outputsize=batch_candles + 1,
+        )
+
+        if result["possibly_truncated"]:
+            raise ValueError(f"Batch {index} possibly truncated")
+
+        frame = result["frame"]
+
+        if frame.empty:
+            raise ValueError(f"Batch {index} empty")
+
+        frame.to_csv(path, index=False)
+
+        new_requests += 1
+        completed += 1
+
+        print(
+            f"Batch {completed}/{len(batches)} saved: "
+            f"{len(frame)} candles"
+        )
+
+    frames = [
+        pd.read_csv(job_dir / f"batch_{i:05d}.csv")
+        for i in range(len(batches))
+    ]
+
+    combined = pd.concat(frames, ignore_index=True)
+    combined["timestamp"] = pd.to_datetime(
+        combined["timestamp"], utc=True
+    )
+    combined = combined.sort_values("timestamp")
+
+    if combined["timestamp"].duplicated().any():
+        raise ValueError("Duplicate timestamps detected")
+
+    step = pd.Timedelta(seconds=INTERVAL_SECONDS[config.timeframe])
+    gaps = int((combined["timestamp"].diff() > step).sum())
+
+    final_path = job_dir / "combined.csv"
+    combined.to_csv(final_path, index=False)
+
+    return {
+        "path": final_path,
+        "candles": len(combined),
+        "gaps": gaps,
+        "completed_batches": completed,
+        "new_requests": new_requests,
+    }

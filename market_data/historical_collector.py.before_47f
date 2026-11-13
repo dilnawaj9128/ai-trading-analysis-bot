@@ -1,0 +1,205 @@
+"""Research-only historical Twelve Data OHLC collection.
+
+Never fetches future/in-progress candles. Does not execute trades.
+"""
+from __future__ import annotations
+
+import math
+import os
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import pandas as pd
+import requests
+
+from market_data.twelve_data_client import (
+    API_URL, INTERVAL_SECONDS, MarketDataError, STATE_PATH,
+    TIMEOUT_SECONDS, reserve_request, utc_now,
+)
+from config.market_config import create_research_config
+from market_data.api_credit_monitor import parse_credit_headers
+from market_data.unified_request_guard import authorize_request
+from market_data.credit_response_handler import refresh_credits_from_response
+
+MAX_HISTORY_BATCH = 5000
+
+
+def _utc(value, name):
+    stamp = pd.Timestamp(value)
+    if pd.isna(stamp) or stamp.tzinfo is None:
+        raise ValueError(f'{name} must be timezone-aware')
+    return stamp.tz_convert('UTC')
+
+
+def parse_historical_payload(payload, *, symbol, interval, start, end, now=None):
+    """Validate provider data for half-open [start, end) UTC candle-open range."""
+    start, end = _utc(start, 'start'), _utc(end, 'end')
+    now = _utc(now if now is not None else utc_now(), 'now')
+    if start >= end:
+        raise ValueError('start must precede end')
+    if interval not in INTERVAL_SECONDS:
+        raise ValueError('Unsupported interval')
+    if not isinstance(payload, dict):
+        raise MarketDataError('Invalid provider response')
+    if payload.get('status') == 'error' or payload.get('code'):
+        raise MarketDataError(f"Provider error: {payload.get('message', 'unknown')}")
+    meta = payload.get('meta')
+    if not isinstance(meta, dict) or meta.get('symbol') != symbol or meta.get('interval') != interval:
+        raise MarketDataError('Provider symbol/interval mismatch')
+    values = payload.get('values')
+    if not isinstance(values, list) or not values:
+        raise MarketDataError('Provider returned no candles')
+    step = pd.Timedelta(seconds=INTERVAL_SECONDS[interval])
+    rows, seen = [], set()
+    for item in values:
+        if not isinstance(item, dict):
+            raise MarketDataError('Malformed candle')
+        try:
+            stamp = pd.Timestamp(datetime.strptime(item['datetime'], '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc))
+            o, h, l, c = (float(item[k]) for k in ('open', 'high', 'low', 'close'))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise MarketDataError('Invalid candle fields') from exc
+        if stamp in seen:
+            raise MarketDataError('Duplicate provider candle')
+        seen.add(stamp)
+        if stamp < start or stamp >= end:
+            raise MarketDataError('Candle outside requested window')
+        if stamp + step > now:
+            raise MarketDataError('Incomplete or future candle')
+        if stamp.value % step.value != 0:
+            raise MarketDataError('Misaligned candle timestamp')
+        if not all(math.isfinite(v) and v > 0 for v in (o, h, l, c)):
+            raise MarketDataError('Invalid OHLC price')
+        if l > min(o, c) or h < max(o, c) or l > h:
+            raise MarketDataError('Invalid OHLC range')
+        rows.append({'timestamp': stamp, 'Open': o, 'High': h, 'Low': l, 'Close': c})
+    return pd.DataFrame(rows).sort_values('timestamp').reset_index(drop=True)
+
+
+
+def _perform_historical_http_request(
+    config, *, start, end, step, key, outputsize,
+    session=None, provider_credit_path=None, now=None,
+):
+    """HTTP transport only. Caller must authorize first."""
+    client = session if session is not None else requests
+    # Twelve Data end_date is inclusive. Subtract one interval to preserve
+    # half-open range semantics and avoid overlap with subsequent batches.
+    inclusive_end = end - step
+    try:
+        response = client.get(API_URL, params={
+            'symbol': config.symbol,
+            'interval': config.timeframe,
+            'start_date': start.strftime('%Y-%m-%d %H:%M:%S'),
+            'end_date': inclusive_end.strftime('%Y-%m-%d %H:%M:%S'),
+            'outputsize': outputsize,
+            'timezone': 'UTC', 'apikey': key, 'format': 'JSON',
+        }, timeout=TIMEOUT_SECONDS)
+        response.raise_for_status()
+        payload = response.json()
+        credit_snapshot = parse_credit_headers(response.headers)
+        if provider_credit_path is not None:
+            refresh_credits_from_response(
+                response,
+                path=provider_credit_path,
+                now=now.to_pydatetime(),
+            )
+    except requests.HTTPError as exc:
+        status = getattr(getattr(exc, 'response', None), 'status_code', None)
+
+        if status == 429:
+            raise MarketDataError(
+                'Historical request failed: HTTP 429 rate limit exceeded'
+            ) from exc
+
+        if status is not None and 500 <= status < 600:
+            raise MarketDataError(
+                f'Historical request failed: HTTP {status} provider server error'
+            ) from exc
+
+        raise MarketDataError(
+            f'Historical request failed: HTTP {status}'
+        ) from exc
+
+    except requests.RequestException as exc:
+        raise MarketDataError(
+            'Historical request failed: network error'
+        ) from exc
+
+    except ValueError as exc:
+        raise MarketDataError(
+            'Historical request failed: invalid JSON'
+        ) from exc
+    return payload, credit_snapshot, response
+
+
+def fetch_historical_candles(config, *, start, end, api_key=None,
+                             state_path=STATE_PATH, now=None, session=None,
+                             outputsize=MAX_HISTORY_BATCH,
+                             provider_credit_path=None):
+    """Fetch one historical range, reserve budget before the HTTP request.
+
+    This is a single API call, not a paginator. A response capped at outputsize
+    must not be interpreted as a complete historical interval.
+    """
+    validated = create_research_config(config.platform, config.market,
+                                       config.symbol, config.timeframe,
+                                       config.expiry_minutes)
+    if config != validated:
+        raise MarketDataError('Unsafe or modified research config')
+    if not isinstance(outputsize, int) or isinstance(outputsize, bool) or not 1 <= outputsize <= MAX_HISTORY_BATCH:
+        raise ValueError('Invalid outputsize')
+    start, end = _utc(start, 'start'), _utc(end, 'end')
+    now = _utc(now if now is not None else utc_now(), 'now')
+    if start >= end or end > now:
+        raise ValueError('Historical range must end no later than now')
+    step = pd.Timedelta(seconds=INTERVAL_SECONDS[config.timeframe])
+    if end > now.floor(f'{INTERVAL_SECONDS[config.timeframe]}s'):
+        raise ValueError('Range includes an incomplete candle')
+    if start.value % step.value or end.value % step.value:
+        raise ValueError('Range boundaries must align to candle interval')
+    key = api_key if api_key is not None else os.environ.get('TWELVE_DATA_API_KEY')
+    if not key:
+        raise MarketDataError('TWELVE_DATA_API_KEY is missing')
+    if provider_credit_path is None:
+        reserve_request(state_path, now=now.to_pydatetime())
+    else:
+        authorize_request(
+            provider_state_path=provider_credit_path,
+            local_budget_path=state_path,
+            now=now.to_pydatetime(),
+        )
+
+    payload, credit_snapshot, _response = _perform_historical_http_request(
+        config,
+        start=start,
+        end=end,
+        step=step,
+        key=key,
+        outputsize=outputsize,
+        session=session,
+        provider_credit_path=provider_credit_path,
+        now=now,
+    )
+    frame = parse_historical_payload(payload, symbol=config.symbol,
+                                     interval=config.timeframe, start=start,
+                                     end=end, now=now)
+    return {'frame': frame, 'credit_snapshot': credit_snapshot,
+            'symbol': config.symbol, 'interval': config.timeframe,
+            'start_utc': start.isoformat(), 'end_utc': end.isoformat(),
+            'candles': len(frame),
+            'gaps': int((frame['timestamp'].diff().dropna() > step).sum()),
+            'possibly_truncated': len(frame) >= outputsize,
+            'analysis_only': True, 'execution_enabled': False}
+
+
+def save_historical_csv(frame, path):
+    """Store validated collector output; fail rather than overwrite a file."""
+    path = Path(path)
+    if path.exists():
+        raise FileExistsError(f'Historical dataset already exists: {path}')
+    if not isinstance(frame, pd.DataFrame) or frame.empty or not {'timestamp', 'Open', 'High', 'Low', 'Close'}.issubset(frame.columns):
+        raise ValueError('Non-empty OHLC DataFrame required')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_csv(path, index=False, mode='x')
+    return path

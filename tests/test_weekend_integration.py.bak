@@ -1,0 +1,77 @@
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pandas as pd
+import pytest
+
+from market_data.resumable_collector import collect_resumable
+from market_data.twelve_data_client import MarketDataError
+
+
+def config():
+    return SimpleNamespace(symbol="EUR/USD", timeframe="1min")
+
+
+def fake_fetch(config, *, start, end, **kwargs):
+    timestamps = pd.date_range(
+        start,
+        end - pd.Timedelta(minutes=1),
+        freq="min",
+        tz="UTC",
+    )
+
+    frame = pd.DataFrame({
+        "timestamp": timestamps,
+        "Open": 1.10,
+        "High": 1.12,
+        "Low": 1.09,
+        "Close": 1.11,
+    })
+
+    return {"frame": frame, "possibly_truncated": False}
+
+
+def test_saturday_skips_api_requests(tmp_path):
+    start = pd.Timestamp("2026-11-14 10:00", tz="UTC")
+    end = start + pd.Timedelta(minutes=6)
+
+    with patch(
+        "market_data.resumable_collector.fetch_historical_candles"
+    ) as mock_fetch:
+        with pytest.raises(MarketDataError, match="No trading candles"):
+            collect_resumable(
+                config(),
+                start=start,
+                end=end,
+                output_dir=tmp_path,
+                batch_candles=3,
+                max_requests=5,
+            )
+
+        mock_fetch.assert_not_called()
+
+
+def test_friday_data_saved_correctly(tmp_path):
+    start = pd.Timestamp("2026-11-13 10:00", tz="UTC")
+    end = start + pd.Timedelta(minutes=6)
+
+    with patch(
+        "market_data.resumable_collector.fetch_historical_candles",
+        side_effect=fake_fetch,
+    ) as mock_fetch:
+        result = collect_resumable(
+            config(),
+            start=start,
+            end=end,
+            output_dir=tmp_path,
+            batch_candles=3,
+            max_requests=5,
+        )
+
+    assert mock_fetch.call_count == 2
+    assert result["candles"] == 6
+    assert result["gaps"] == 0
+
+    saved = pd.read_csv(result["path"])
+    assert len(saved) == 6
+    assert saved["timestamp"].is_unique

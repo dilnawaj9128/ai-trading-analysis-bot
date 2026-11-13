@@ -1,0 +1,40 @@
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pandas as pd
+import pytest
+
+from market_data.resumable_collector import collect_resumable
+from market_data.twelve_data_client import MarketDataError
+
+
+def test_multi_session_batch_fails_without_api_calls(tmp_path):
+    config = SimpleNamespace(
+        symbol="EUR/USD",
+        timeframe="1min",
+    )
+
+    start = pd.Timestamp("2026-11-13T12:00:00Z")
+    end = pd.Timestamp("2026-11-16T12:00:00Z")
+
+    with patch(
+        "market_data.resumable_collector.utc_now",
+        return_value=pd.Timestamp("2026-11-17T12:00:00Z"),
+    ), patch(
+        "market_data.resumable_collector.fetch_historical_candles",
+    ) as fetch:
+        with pytest.raises(
+            MarketDataError,
+            match="Multiple open segments",
+        ):
+            collect_resumable(
+                config,
+                start=start,
+                end=end,
+                output_dir=tmp_path,
+                batch_candles=4999,
+                max_requests=5,
+            )
+
+    fetch.assert_not_called()
+    assert not list(tmp_path.rglob("combined.csv"))

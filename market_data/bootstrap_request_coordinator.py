@@ -1,0 +1,102 @@
+"""One-time bootstrap coordinator for research-only API requests."""
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+from market_data.bootstrap_authorization import (
+    claim_bootstrap_approval,
+)
+from market_data.credit_bootstrap_policy import (
+    decide_credit_bootstrap,
+)
+from market_data.credit_response_handler import (
+    refresh_credits_from_response,
+)
+from market_data.provider_credit_state import DEFAULT_PATH
+from market_data.twelve_data_client import (
+    STATE_PATH,
+    reserve_request,
+)
+
+
+class BootstrapNotPermitted(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class BootstrapResult:
+    request_executed: bool
+    credits_refreshed: bool
+    credits_left: int | None
+
+
+def execute_bootstrap(
+    *,
+    request_callback,
+    approval_id,
+    response_validator=None,
+    explicitly_approved=False,
+    approval_path="data/api_usage/bootstrap_claim.json",
+    provider_state_path=DEFAULT_PATH,
+    local_budget_path=STATE_PATH,
+    now=None,
+):
+    if not callable(request_callback):
+        raise ValueError("Callable request_callback required")
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    decision = decide_credit_bootstrap(
+        path=provider_state_path,
+        now=now,
+        bootstrap_approved=explicitly_approved,
+    )
+
+    if decision.action != "BOOTSTRAP":
+        raise BootstrapNotPermitted(
+            f"Bootstrap not permitted: {decision.action}"
+        )
+
+    # Claim approval before spending local budget or making HTTP calls.
+    claim_bootstrap_approval(
+        approval_id=approval_id,
+        explicitly_approved=explicitly_approved,
+        path=approval_path,
+        now=now,
+    )
+
+    # Local quota remains enforced for bootstrap requests.
+    reserve_request(
+        path=local_budget_path,
+        now=now,
+    )
+
+    response = request_callback()
+
+    # A callback must return a real HTTP-like response with a status.
+    # Never treat a missing status or HTTP error as success.
+    status = getattr(response, "status_code", None)
+
+    if type(status) is not int or not 200 <= status < 300:
+        raise BootstrapNotPermitted(
+            f"Bootstrap HTTP response not successful: {status}"
+        )
+
+    # Validate the response before updating provider credit state.
+    if response_validator is not None:
+        if not callable(response_validator):
+            raise ValueError("response_validator must be callable")
+        response_validator(response)
+
+    refresh = refresh_credits_from_response(
+        response,
+        path=provider_state_path,
+        now=now,
+    )
+
+    return BootstrapResult(
+        request_executed=True,
+        credits_refreshed=refresh.updated,
+        credits_left=refresh.credits_left,
+    )
