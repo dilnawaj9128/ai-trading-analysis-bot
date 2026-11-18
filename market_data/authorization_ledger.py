@@ -4,6 +4,7 @@ Does not perform HTTP requests or trading execution.
 """
 
 import fcntl
+import os
 from pathlib import Path
 
 from market_data.provider_credit_state import DEFAULT_PATH
@@ -54,6 +55,24 @@ def transition_authorization(
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
 
         try:
+            # Verify that the locked file descriptor still
+            # represents the lock file reachable by its path.
+            try:
+                locked_stat = os.fstat(lock_file.fileno())
+                path_stat = os.stat(lock_path)
+            except OSError as exc:
+                raise RuntimeError(
+                    "Authorization lock identity unavailable"
+                ) from exc
+
+            if (
+                locked_stat.st_dev != path_stat.st_dev
+                or locked_stat.st_ino != path_stat.st_ino
+            ):
+                raise RuntimeError(
+                    "Authorization lock identity changed"
+                )
+
             ledger = _load_ledger(ledger_path)
 
             # A missing ledger must not be treated as an empty ledger.

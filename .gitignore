@@ -26,3 +26,17 @@ venv/
 .env
 .env.*
 !.env.example
+
+# Local source backups
+/backup/
+/backups/
+/app_stage5_backup.py
+
+# Local API usage and provider state
+/data/api_usage/
+
+# Downloaded historical datasets
+/data/historical/
+
+# Generated research outputs
+/reports/

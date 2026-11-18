@@ -107,6 +107,14 @@ def _load_ledger(path):
         version = payload.get("version")
 
         if version == 1:
+            # Legacy V1 has aggregate reservations only.
+            # Reject unknown fields instead of silently
+            # discarding potentially important evidence.
+            if set(payload) != {"version", "reserved"}:
+                raise ValueError(
+                    "Invalid legacy ledger structure"
+                )
+
             reserved = payload.get("reserved")
 
             if type(reserved) is not int or reserved < 0:

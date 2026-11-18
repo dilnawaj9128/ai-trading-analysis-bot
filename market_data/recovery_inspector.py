@@ -90,10 +90,25 @@ def inspect_recovery_state(provider_state_path):
     # If recovery is pending but synchronization is unavailable,
     # classify conservatively rather than reading an unlocked ledger.
     if not lock_path.exists():
-        if marker_path.exists():
+        history_path = provider_path.with_name(
+            provider_path.name + ".authorization_history.json"
+        )
+        journal_path = provider_path.with_name(
+            provider_path.name + ".authorization_journal.json"
+        )
+
+        if (
+            marker_path.exists()
+            or history_path.exists()
+            or journal_path.exists()
+            or ledger_path.exists()
+        ):
             return RecoveryInspection(
                 "INCONSISTENT",
-                reason="Recovery pending but lock file missing",
+                reason=(
+                    "Authorization or recovery evidence exists "
+                    "but lock file is missing"
+                ),
             )
 
         return RecoveryInspection("NO_RECOVERY")
@@ -268,6 +283,46 @@ def inspect_recovery_state(provider_state_path):
                 )
 
             request_id = marker["request_id"]
+
+            # Cross-check recovery marker against the journal
+            # when independent journal evidence exists.
+            if journal_path.exists():
+                try:
+                    marker_journal = load_journal(journal_path)
+                except (
+                    AuthorizationJournalError,
+                    OSError,
+                    ValueError,
+                    TypeError,
+                    KeyError,
+                ):
+                    return RecoveryInspection(
+                        "INCONSISTENT",
+                        request_id=request_id,
+                        reason="Invalid authorization journal",
+                    )
+
+                journal_entry = marker_journal[
+                    "transactions"
+                ].get(request_id)
+
+                if journal_entry is None:
+                    return RecoveryInspection(
+                        "INCONSISTENT",
+                        request_id=request_id,
+                        reason="Recovery marker request missing from journal",
+                    )
+
+                if (
+                    journal_entry["credits"] != marker["credits"]
+                    or journal_entry["authorized_at"]
+                    != marker["authorized_at"]
+                ):
+                    return RecoveryInspection(
+                        "INCONSISTENT",
+                        request_id=request_id,
+                        reason="Recovery marker and journal metadata mismatch",
+                    )
 
             try:
                 ledger = _load_ledger(ledger_path)
