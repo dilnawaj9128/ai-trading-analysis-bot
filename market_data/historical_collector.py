@@ -20,6 +20,7 @@ from config.market_config import create_research_config
 from market_data.api_credit_monitor import parse_credit_headers
 from market_data.unified_request_guard import authorize_request
 from market_data.credit_response_handler import refresh_credits_from_response
+from market_data.basic8_credit_policy import PROVIDER_RESERVE_CREDITS
 
 MAX_HISTORY_BATCH = 5000
 
@@ -97,13 +98,23 @@ def _perform_historical_http_request(
         }, timeout=TIMEOUT_SECONDS)
         response.raise_for_status()
         payload = response.json()
+
+        if isinstance(payload, dict) and payload.get("status") == "error":
+            raise MarketDataError("Provider error payload")
+
         credit_snapshot = parse_credit_headers(response.headers)
         if provider_credit_path is not None:
-            refresh_credits_from_response(
+            refresh = refresh_credits_from_response(
                 response,
                 path=provider_credit_path,
                 now=now.to_pydatetime(),
             )
+
+            if refresh.updated is not True:
+                raise MarketDataError(
+                    "Provider credit snapshot update failed; "
+                    "reservation retained"
+                )
     except requests.HTTPError as exc:
         status = getattr(getattr(exc, 'response', None), 'status_code', None)
 
@@ -177,15 +188,27 @@ def fetch_historical_candles(config, *, start, end, api_key=None,
         now=now,
         outputsize=outputsize,
     )
-    authorization = None
+    # Every historical request requires provider-aware authorization.
+    # UNKNOWN or expired provider credits must fail closed.
+    from market_data.provider_credit_state import DEFAULT_PATH
 
     if provider_credit_path is None:
-        reserve_request(state_path, now=now.to_pydatetime())
-    else:
-        authorization = authorize_request(
-            provider_state_path=provider_credit_path,
-            local_budget_path=state_path,
-            now=now.to_pydatetime(),
+        provider_credit_path = DEFAULT_PATH
+
+    authorization = authorize_request(
+        provider_state_path=provider_credit_path,
+        local_budget_path=state_path,
+        now=now.to_pydatetime(),
+        reserve_credits=PROVIDER_RESERVE_CREDITS,
+    )
+
+    if (
+        not authorization.authorized
+        or not authorization.local_budget_reserved
+        or not authorization.request_id
+    ):
+        raise MarketDataError(
+            "Incomplete historical request authorization"
         )
 
     try:

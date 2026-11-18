@@ -1,0 +1,147 @@
+=== Existing fetch and authorization callers ===
+./market_data/unified_request_guard.py:211:def authorize_request(
+./market_data/historical_collector.py:21:from market_data.unified_request_guard import authorize_request
+./market_data/historical_collector.py:185:        authorization = authorize_request(
+./market_data/twelve_data_client.py:311:def fetch_recent_candles(
+./market_data/live_monitor.py:15:    fetch_recent_candles,
+./market_data/live_monitor.py:214:def run_monitor_poll(
+./market_data/live_monitor.py:243:    fetch = fetcher or fetch_recent_candles
+./dashboard/pages/3_Live_Market_Monitor.py:18:    fetch_recent_candles,
+./dashboard/pages/3_Live_Market_Monitor.py:85:            result = fetch_recent_candles(config)
+./dashboard/pages/4_Auto_Live_Monitor.py:15:from market_data.live_monitor import read_monitor_state, run_monitor_poll
+./dashboard/pages/4_Auto_Live_Monitor.py:68:        outcome = run_monitor_poll(config, interval_minutes=refresh_minutes)
+./tests/test_authorization_lock_identity.py:10:from market_data.unified_request_guard import authorize_request
+./tests/test_authorization_lock_identity.py:52:            authorize_request(
+./tests/test_recovery_marker_lifecycle.py:9:from market_data.unified_request_guard import authorize_request
+./tests/test_recovery_marker_lifecycle.py:34:    result = authorize_request(
+./tests/test_recovery_marker_lifecycle.py:52:            authorize_request(
+./tests/test_recovery_marker_lifecycle.py:76:            authorize_request(
+./tests/test_recovery_marker_lifecycle.py:93:            authorize_request(
+./tests/test_atomic_authorization_ledger.py:6:from market_data.unified_request_guard import authorize_request
+./tests/test_atomic_authorization_ledger.py:32:    result = authorize_request(
+./tests/test_atomic_authorization_ledger.py:57:        authorize_request(
+./tests/test_atomic_authorization_ledger.py:82:    result = authorize_request(
+./tests/test_multiple_process_crash_points.py:17:from market_data.unified_request_guard import authorize_request
+./tests/test_multiple_process_crash_points.py:57:        from market_data.unified_request_guard import authorize_request
+./tests/test_multiple_process_crash_points.py:70:            authorize_request(
+./tests/test_multiple_process_crash_points.py:146:        authorize_request(
+./tests/test_recovery_marker_journal_consistency.py:6:from market_data.unified_request_guard import authorize_request
+./tests/test_recovery_marker_journal_consistency.py:22:    result = authorize_request(
+./tests/test_unverified_settlement_safety.py:8:from market_data.unified_request_guard import authorize_request
+./tests/test_unverified_settlement_safety.py:29:    result = authorize_request(
+./tests/test_recovery_missing_history.py:5:from market_data.unified_request_guard import authorize_request
+./tests/test_recovery_missing_history.py:26:    result = authorize_request(
+./tests/test_invalid_candle_reservation.py:43:            "market_data.historical_collector.authorize_request"
+./tests/test_missing_recovery_evidence.py:10:from market_data.unified_request_guard import authorize_request
+./tests/test_missing_recovery_evidence.py:42:            authorize_request(
+./tests/test_missing_recovery_evidence.py:73:    result = authorize_request(
+./tests/test_authorization_commit_failure.py:9:from market_data.unified_request_guard import authorize_request
+./tests/test_authorization_commit_failure.py:37:            authorize_request(
+./tests/test_authorization_commit_failure.py:69:        authorize_request(
+./tests/test_recovery_history_inspection.py:5:from market_data.unified_request_guard import authorize_request
+./tests/test_recovery_history_inspection.py:32:    result = authorize_request(
+./tests/test_twelve_data_client.py:168:        td.fetch_recent_candles(
+./tests/test_twelve_data_client.py:188:        td.fetch_recent_candles(
+./tests/test_twelve_data_client.py:213:    result = td.fetch_recent_candles(
+./tests/test_recovery_state_classification.py:6:from market_data.unified_request_guard import authorize_request
+./tests/test_recovery_state_classification.py:54:    result = authorize_request(
+./tests/test_recovery_state_classification.py:77:    result = authorize_request(
+./tests/test_recovery_journal_ledger_mismatch.py:6:from market_data.unified_request_guard import authorize_request
+./tests/test_recovery_journal_ledger_mismatch.py:24:    result = authorize_request(
+./tests/test_crash_after_journal_finalization.py:12:from market_data.unified_request_guard import authorize_request
+./tests/test_crash_after_journal_finalization.py:42:            authorize_request(
+./tests/test_crash_after_journal_finalization.py:75:        authorize_request(
+./tests/test_journal_ledger_consistency.py:9:from market_data.unified_request_guard import authorize_request
+./tests/test_journal_ledger_consistency.py:28:    first = authorize_request(
+./tests/test_journal_ledger_consistency.py:51:            authorize_request(
+./tests/test_missing_authorization_evidence.py:8:from market_data.unified_request_guard import authorize_request
+./tests/test_missing_authorization_evidence.py:26:    first = authorize_request(
+./tests/test_missing_authorization_evidence.py:48:            authorize_request(
+./tests/test_recovery_marker_integrity.py:11:from market_data.unified_request_guard import authorize_request
+./tests/test_recovery_marker_integrity.py:55:            authorize_request(
+./tests/test_recovery_marker_integrity.py:90:            authorize_request(
+./tests/test_recovery_unresolved_intent.py:6:from market_data.unified_request_guard import authorize_request
+./tests/test_recovery_unresolved_intent.py:27:    result = authorize_request(
+./tests/test_crash_after_journal_intent.py:13:from market_data.unified_request_guard import authorize_request
+./tests/test_crash_after_journal_intent.py:42:            authorize_request(
+./tests/test_crash_after_journal_intent.py:69:        authorize_request(
+./tests/test_budget_recovery_integration.py:11:from market_data.unified_request_guard import authorize_request
+./tests/test_budget_recovery_integration.py:81:            authorize_request(
+./tests/test_budget_recovery_integration.py:110:            authorize_request(
+./tests/test_budget_recovery_integration.py:125:            authorize_request(
+./tests/test_budget_recovery_integration.py:154:            authorize_request(
+./tests/test_unified_request_guard.py:12:from market_data.unified_request_guard import authorize_request
+./tests/test_unified_request_guard.py:41:        result = authorize_request(
+./tests/test_unified_request_guard.py:60:            authorize_request(
+./tests/test_unified_request_guard.py:73:            authorize_request(
+./tests/test_unified_request_guard.py:91:            authorize_request(
+./tests/test_unified_request_guard.py:107:            authorize_request(
+./tests/test_unified_request_guard.py:119:        result = authorize_request(
+./tests/test_unified_request_guard.py:134:            authorize_request(
+./tests/test_authorization_ledger_transitions.py:8:from market_data.unified_request_guard import authorize_request
+./tests/test_authorization_ledger_transitions.py:31:    result = authorize_request(
+./tests/test_provider_credit_concurrency.py:7:from market_data.unified_request_guard import authorize_request
+./tests/test_provider_credit_concurrency.py:34:            authorize_request(
+./tests/test_crash_after_ledger_commit.py:12:from market_data.unified_request_guard import authorize_request
+./tests/test_crash_after_ledger_commit.py:41:            authorize_request(
+./tests/test_crash_after_ledger_commit.py:76:        authorize_request(
+./tests/test_crash_after_recovery_marker.py:11:from market_data.unified_request_guard import authorize_request
+./tests/test_crash_after_recovery_marker.py:41:            authorize_request(
+./tests/test_crash_after_recovery_marker.py:71:        authorize_request(
+./tests/test_live_monitor.py:12:    run_monitor_poll,
+./tests/test_live_monitor.py:129:    first = run_monitor_poll(
+./tests/test_live_monitor.py:140:    second = run_monitor_poll(
+./tests/test_live_monitor.py:161:    result = run_monitor_poll(
+./tests/test_live_monitor.py:182:    result = run_monitor_poll(
+./tests/test_process_termination_durability.py:15:from market_data.unified_request_guard import authorize_request
+./tests/test_process_termination_durability.py:37:        from market_data.unified_request_guard import authorize_request
+./tests/test_process_termination_durability.py:49:            authorize_request(
+./tests/test_process_termination_durability.py:101:        authorize_request(
+./tests/test_http_reservation_lifecycle.py:30:            "market_data.historical_collector.authorize_request"
+./tests/test_authorization_metadata.py:6:from market_data.unified_request_guard import authorize_request
+./tests/test_authorization_metadata.py:29:    result = authorize_request(
+./tests/test_authorization_metadata.py:63:    first = authorize_request(
+./tests/test_authorization_metadata.py:69:    second = authorize_request(
+./tests/test_authorization_journal.py:9:from market_data.unified_request_guard import authorize_request
+./tests/test_authorization_journal.py:38:            authorize_request(
+./tests/test_authorization_journal.py:88:            authorize_request(
+./tests/test_authorization_journal.py:102:            authorize_request(
+./tests/test_authorization_journal.py:131:            authorize_request(
+./tests/test_authorization_journal.py:155:    first = authorize_request(
+./tests/test_authorization_journal.py:175:            authorize_request(
+./tests/test_journal_finalization_failure.py:9:from market_data.unified_request_guard import authorize_request
+./tests/test_journal_finalization_failure.py:37:            authorize_request(
+./tests/test_journal_finalization_failure.py:65:            authorize_request(
+./tests/test_recovery_transaction_metadata.py:9:from market_data.unified_request_guard import authorize_request
+./tests/test_recovery_transaction_metadata.py:36:            authorize_request(
+./tests/test_recovery_transaction_metadata.py:61:            authorize_request(
+./tests/test_credit_reconciliation_safety.py:13:from market_data.unified_request_guard import authorize_request
+./tests/test_credit_reconciliation_safety.py:34:    authorize_request(
+./tests/test_credit_reconciliation_safety.py:82:        authorize_request(
+./tests/test_authorization_history_failure.py:8:from market_data.unified_request_guard import authorize_request
+./tests/test_authorization_history_failure.py:37:            authorize_request(
+./tests/test_authorization_journal_write_failure.py:8:from market_data.unified_request_guard import authorize_request
+./tests/test_authorization_journal_write_failure.py:37:            authorize_request(
+./tests/test_authorization_journal_write_failure.py:65:            authorize_request(
+=== Relevant test files ===
+tests/test_api_credit_monitor.py
+tests/test_atomic_authorization_ledger.py
+tests/test_atomic_authorization_ledger.py.before_47t
+tests/test_authorization_commit_failure.py
+tests/test_authorization_history_failure.py
+tests/test_authorization_journal_integrity.py
+tests/test_authorization_journal.py
+tests/test_authorization_journal_write_failure.py
+tests/test_authorization_ledger_transitions.py
+tests/test_authorization_lock_identity.py
+tests/test_authorization_metadata.py
+tests/test_bootstrap_authorization.py
+tests/test_live_monitor.py
+tests/test_missing_authorization_evidence.py
+tests/test_twelve_data_client.py
+tests/test_twelve_data_historical.py
+tests/test_unified_request_guard.py
+=== Current Git status ===
+?? stage18_api_safety_audit.txt
+?? stage18_dashboard_audit.txt
+?? stage18_integration_review.txt

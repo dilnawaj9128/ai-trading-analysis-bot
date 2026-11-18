@@ -1,0 +1,491 @@
+========== market_data/credit_refresh_approval.py ==========
+"""Persistent single-use approval for offline credit-refresh preparation.
+
+Does not authorize HTTP requests or reserve API credits.
+"""
+
+import json
+import os
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+class CreditRefreshApprovalRequired(RuntimeError):
+    pass
+
+
+class CreditRefreshApprovalAlreadyUsed(RuntimeError):
+    pass
+
+
+def claim_credit_refresh_approval(
+    *,
+    approval_id,
+    explicitly_approved=False,
+    path="data/api_usage/credit_refresh_claim.json",
+    now=None,
+):
+    if not isinstance(approval_id, str) or not approval_id.strip():
+        raise ValueError("Non-empty approval_id required")
+
+    if type(explicitly_approved) is not bool:
+        raise ValueError("Explicit approval flag must be boolean")
+
+    if not explicitly_approved:
+        raise CreditRefreshApprovalRequired(
+            "Explicit credit-refresh approval required"
+        )
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    if not isinstance(now, datetime) or now.tzinfo is None:
+        raise ValueError("Timezone-aware datetime required")
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "version": 1,
+        "claim_id": uuid.uuid4().hex,
+        "approval_id": approval_id,
+        "claimed_at": now.astimezone(timezone.utc).isoformat(),
+        "status": "CLAIMED_OFFLINE",
+    }
+
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+
+    try:
+        fd = os.open(path, flags, 0o600)
+    except FileExistsError as exc:
+        raise CreditRefreshApprovalAlreadyUsed(
+            "Credit-refresh approval already claimed"
+        ) from exc
+
+    # Retain the claim on write failure: fail closed.
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+    directory_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+    return payload
+========== market_data/credit_refresh_store.py ==========
+"""Offline persistent credit-refresh lifecycle store.
+
+No HTTP requests, API keys, quota changes, or trading execution.
+"""
+
+import fcntl
+import json
+import os
+import tempfile
+import uuid
+
+from datetime import datetime, timezone
+from pathlib import Path
+
+from market_data.credit_refresh_lifecycle import (
+    evaluate_refresh_lifecycle,
+)
+
+
+class CreditRefreshStoreError(RuntimeError):
+    pass
+
+
+def _utc(now):
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    if not isinstance(now, datetime) or now.tzinfo is None:
+        raise ValueError("Timezone-aware datetime required")
+
+    return now.astimezone(timezone.utc)
+
+
+def _load(path):
+    if not path.exists():
+        return None
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+
+        if (
+            type(data) is not dict
+            or set(data) != {
+                "version",
+                "attempt_id",
+                "attempted_at",
+                "status",
+            }
+            or type(data["version"]) is not int
+            or data["version"] != 1
+            or type(data["attempt_id"]) is not str
+            or len(data["attempt_id"]) != 32
+            or any(
+                c not in "0123456789abcdef"
+                for c in data["attempt_id"]
+            )
+            or data["status"] not in (
+                "CLAIMED",
+                "UNCERTAIN",
+                "COMPLETED",
+            )
+        ):
+            raise ValueError("Invalid lifecycle state")
+
+        attempted_at = datetime.fromisoformat(
+            data["attempted_at"]
+        )
+
+        if attempted_at.tzinfo is None:
+            raise ValueError("Naive lifecycle timestamp")
+
+        return data
+
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise CreditRefreshStoreError(
+            "Invalid persistent lifecycle state"
+        ) from exc
+
+
+def _save(path, data):
+    temporary = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=".credit_refresh_",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(data, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        os.replace(temporary, path)
+
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def claim_refresh_attempt(
+    *,
+    path,
+    now=None,
+    cooldown_seconds=3600,
+):
+    """Persist an offline claim; never executes a request."""
+
+    now = _utc(now)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    lock_path = path.with_name(path.name + ".lock")
+
+    with open(lock_path, "a+b") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+
+        try:
+            locked = os.fstat(lock_file.fileno())
+            current = os.stat(lock_path)
+
+            if (
+                locked.st_dev != current.st_dev
+                or locked.st_ino != current.st_ino
+            ):
+                raise CreditRefreshStoreError(
+                    "Lifecycle lock identity changed"
+                )
+
+            previous = _load(path)
+
+            last_attempt_at = None
+            last_status = None
+
+            if previous is not None:
+                last_attempt_at = datetime.fromisoformat(
+                    previous["attempted_at"]
+                )
+                last_status = previous["status"]
+
+            decision = evaluate_refresh_lifecycle(
+                last_attempt_at=last_attempt_at,
+                last_status=last_status,
+                now=now,
+                cooldown_seconds=cooldown_seconds,
+            )
+
+            if not decision.allowed:
+                raise CreditRefreshStoreError(
+                    f"Refresh blocked: {decision.reason}"
+                )
+
+            data = {
+                "version": 1,
+                "attempt_id": uuid.uuid4().hex,
+                "attempted_at": now.isoformat(),
+                "status": "CLAIMED",
+            }
+
+            _save(path, data)
+
+            return data
+
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def transition_refresh_attempt(
+    *,
+    path,
+    attempt_id,
+    status,
+):
+    """Persist a conservative lifecycle transition."""
+
+    if status not in ("UNCERTAIN", "COMPLETED"):
+        raise ValueError("Unsupported lifecycle transition")
+
+    path = Path(path)
+    lock_path = path.with_name(path.name + ".lock")
+
+    if not path.exists():
+        raise CreditRefreshStoreError(
+            "Lifecycle state missing"
+        )
+
+    with open(lock_path, "a+b") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+
+        try:
+            locked = os.fstat(lock_file.fileno())
+            current = os.stat(lock_path)
+
+            if (
+                locked.st_dev != current.st_dev
+                or locked.st_ino != current.st_ino
+            ):
+                raise CreditRefreshStoreError(
+                    "Lifecycle lock identity changed"
+                )
+
+            data = _load(path)
+
+            if data is None:
+                raise CreditRefreshStoreError(
+                    "Lifecycle state missing"
+                )
+
+            if data["attempt_id"] != attempt_id:
+                raise CreditRefreshStoreError(
+                    "Attempt ID mismatch"
+                )
+
+            if data["status"] != "CLAIMED":
+                raise CreditRefreshStoreError(
+                    "Only CLAIMED attempts may transition"
+                )
+
+            data["status"] = status
+            _save(path, data)
+
+            return data
+
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+========== market_data/credit_refresh_coordinator.py ==========
+"""Offline approval/lifecycle binding coordinator.
+
+No HTTP, API key access, quota reservations, or trading.
+This is not a production request authorization mechanism.
+"""
+
+import json
+from pathlib import Path
+
+from market_data.credit_refresh_store import (
+    claim_refresh_attempt,
+)
+
+
+class CreditRefreshBindingError(RuntimeError):
+    pass
+
+
+def prepare_offline_refresh(
+    *,
+    approval_path,
+    lifecycle_path,
+    approval_id,
+    now=None,
+):
+    """Require an existing approval claim before lifecycle preparation."""
+
+    approval_path = Path(approval_path)
+    lifecycle_path = Path(lifecycle_path)
+
+    if not isinstance(approval_id, str) or not approval_id.strip():
+        raise ValueError("Valid approval_id required")
+
+    if approval_path == lifecycle_path:
+        raise CreditRefreshBindingError(
+            "Approval and lifecycle paths must differ"
+        )
+
+    try:
+        approval = json.loads(
+            approval_path.read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError) as exc:
+        raise CreditRefreshBindingError(
+            "Approval claim unavailable or invalid"
+        ) from exc
+
+    if (
+        type(approval) is not dict
+        or approval.get("version") != 1
+        or approval.get("status") != "CLAIMED_OFFLINE"
+        or approval.get("approval_id") != approval_id
+        or type(approval.get("claim_id")) is not str
+        or len(approval["claim_id"]) != 32
+    ):
+        raise CreditRefreshBindingError(
+            "Approval claim verification failed"
+        )
+
+    # A durable approval claim must already exist.
+    # Lifecycle claim is separately durable and fail-closed.
+    # This does not establish a multi-file atomic transaction.
+    lifecycle = claim_refresh_attempt(
+        path=lifecycle_path,
+        now=now,
+    )
+
+    return {
+        "approval_id": approval_id,
+        "approval_claim_id": approval["claim_id"],
+        "attempt_id": lifecycle["attempt_id"],
+        "status": lifecycle["status"],
+        "offline_only": True,
+    }
+========== tests/test_credit_refresh_coordinator.py ==========
+from datetime import datetime, timezone
+
+import pytest
+
+from market_data.credit_refresh_approval import (
+    claim_credit_refresh_approval,
+)
+from market_data.credit_refresh_coordinator import (
+    prepare_offline_refresh,
+    CreditRefreshBindingError,
+)
+
+
+NOW = datetime(2026, 11, 18, 12, 0, tzinfo=timezone.utc)
+
+
+def test_missing_approval_blocks(tmp_path):
+    with pytest.raises(CreditRefreshBindingError):
+        prepare_offline_refresh(
+            approval_path=tmp_path / "approval.json",
+            lifecycle_path=tmp_path / "lifecycle.json",
+            approval_id="approved-1",
+            now=NOW,
+        )
+
+
+def test_valid_approval_prepares_lifecycle(tmp_path):
+    approval_path = tmp_path / "approval.json"
+    lifecycle_path = tmp_path / "lifecycle.json"
+
+    claim_credit_refresh_approval(
+        approval_id="approved-1",
+        explicitly_approved=True,
+        path=approval_path,
+        now=NOW,
+    )
+
+    result = prepare_offline_refresh(
+        approval_path=approval_path,
+        lifecycle_path=lifecycle_path,
+        approval_id="approved-1",
+        now=NOW,
+    )
+
+    assert result["status"] == "CLAIMED"
+    assert result["offline_only"] is True
+
+
+def test_wrong_approval_id_blocks(tmp_path):
+    approval_path = tmp_path / "approval.json"
+
+    claim_credit_refresh_approval(
+        approval_id="approved-1",
+        explicitly_approved=True,
+        path=approval_path,
+        now=NOW,
+    )
+
+    with pytest.raises(CreditRefreshBindingError):
+        prepare_offline_refresh(
+            approval_path=approval_path,
+            lifecycle_path=tmp_path / "lifecycle.json",
+            approval_id="different-approval",
+            now=NOW,
+        )
+
+
+def test_corrupt_approval_blocks(tmp_path):
+    approval_path = tmp_path / "approval.json"
+    approval_path.write_text("{broken")
+
+    with pytest.raises(CreditRefreshBindingError):
+        prepare_offline_refresh(
+            approval_path=approval_path,
+            lifecycle_path=tmp_path / "lifecycle.json",
+            approval_id="approved-1",
+            now=NOW,
+        )
+
+
+def test_duplicate_preparation_blocks(tmp_path):
+    approval_path = tmp_path / "approval.json"
+    lifecycle_path = tmp_path / "lifecycle.json"
+
+    claim_credit_refresh_approval(
+        approval_id="approved-1",
+        explicitly_approved=True,
+        path=approval_path,
+        now=NOW,
+    )
+
+    kwargs = {
+        "approval_path": approval_path,
+        "lifecycle_path": lifecycle_path,
+        "approval_id": "approved-1",
+        "now": NOW,
+    }
+
+    prepare_offline_refresh(**kwargs)
+
+    with pytest.raises(RuntimeError):
+        prepare_offline_refresh(**kwargs)

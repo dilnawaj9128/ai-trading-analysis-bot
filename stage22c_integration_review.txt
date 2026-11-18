@@ -1,0 +1,1091 @@
+========== analysis/live_engine.py ==========
+
+"""Research-only technical analysis of validated completed candles."""
+
+import pandas as pd
+
+from indicators import calculate_ema, calculate_indicators
+from patterns.candlestick import detect_candlestick_patterns
+
+
+def analyze_live_candles(frame: pd.DataFrame) -> dict:
+    """Analyze completed OHLC candles without placing trades."""
+
+    if not isinstance(frame, pd.DataFrame):
+        raise TypeError("Expected pandas DataFrame")
+
+    if len(frame) < 60:
+        raise ValueError(
+            "At least 60 completed candles are required"
+        )
+
+    # Existing validation and indicators are reused.
+    enriched = calculate_indicators(frame)
+
+    enriched["EMA_9"] = calculate_ema(
+        enriched["Close"], 9
+    )
+    enriched["EMA_21"] = calculate_ema(
+        enriched["Close"], 21
+    )
+
+    patterns = detect_candlestick_patterns(frame)
+
+    latest = enriched.iloc[-1]
+
+    ema9 = latest["EMA_9"]
+    ema21 = latest["EMA_21"]
+    rsi = latest["RSI_14"]
+
+    observations = []
+
+    if pd.notna(ema9) and pd.notna(ema21):
+        if ema9 > ema21:
+            observations.append(
+                "Short-term EMA 9 is above EMA 21"
+            )
+        elif ema9 < ema21:
+            observations.append(
+                "Short-term EMA 9 is below EMA 21"
+            )
+        else:
+            observations.append(
+                "EMA 9 and EMA 21 are equal"
+            )
+
+    if pd.notna(rsi):
+        if rsi > 70:
+            observations.append(
+                "RSI is above 70 (high momentum reading)"
+            )
+        elif rsi < 30:
+            observations.append(
+                "RSI is below 30 (low momentum reading)"
+            )
+        else:
+            observations.append(
+                "RSI is between 30 and 70"
+            )
+
+    return {
+        "frame": enriched,
+        "patterns": patterns,
+        "observations": observations,
+        "latest": latest.to_dict(),
+        "analysis_only": True,
+        "execution_enabled": False,
+        "directional_backtesting_allowed": False,
+    }
+
+========== analysis/live_monitor.py ==========
+FILE NOT FOUND
+========== market_data/live_monitor.py ==========
+
+"""Stage 7.3: conservative, research-only polling scheduler."""
+
+from __future__ import annotations
+
+import fcntl
+import json
+import os
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from market_data.twelve_data_client import (
+    BudgetExceeded,
+    MarketDataError,
+    fetch_recent_candles,
+)
+
+POLLING_MINUTES = (1, 3, 5)
+DEFAULT_POLLING_MINUTES = 3
+
+# Global local-machine spacing, regardless of symbol or browser session.
+MIN_REQUEST_SPACING_SECONDS = 60
+ERROR_BACKOFF_SECONDS = 180
+
+SCHEDULER_PATH = Path(
+    "data/api_usage/live_monitor_scheduler.json"
+)
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
+
+
+def _iso(dt):
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+def _parse_time(value):
+    if not value:
+        return None
+
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        raise MarketDataError("Scheduler timestamp lacks timezone")
+
+    return dt.astimezone(timezone.utc)
+
+
+def _read_state(file):
+    file.seek(0)
+    raw = file.read()
+
+    if not raw.strip():
+        return {}
+
+    try:
+        state = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise MarketDataError(
+            "Scheduler state corrupted; polling blocked"
+        ) from exc
+
+    if not isinstance(state, dict):
+        raise MarketDataError("Invalid scheduler state")
+
+    return state
+
+
+def _save_state(file, state):
+    file.seek(0)
+    file.truncate()
+    json.dump(state, file, indent=2)
+    file.flush()
+    os.fsync(file.fileno())
+
+
+def reserve_poll(
+    *,
+    interval_minutes=DEFAULT_POLLING_MINUTES,
+    path=SCHEDULER_PATH,
+    now=None,
+):
+    """Reserve one poll slot across local processes.
+
+    Uses a persistent file lock and fails closed on invalid state.
+    No network request happens here.
+    """
+    if (
+        type(interval_minutes) is not int
+        or interval_minutes not in POLLING_MINUTES
+    ):
+        raise ValueError("Polling must be 1, 3 or 5 minutes")
+
+    now = now or utc_now()
+    if now.tzinfo is None:
+        raise ValueError("Polling time must have a timezone")
+
+    now = now.astimezone(timezone.utc)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with path.open("a+", encoding="utf-8") as file:
+        fcntl.flock(file.fileno(), fcntl.LOCK_EX)
+
+        try:
+            state = _read_state(file)
+
+            last_attempt = _parse_time(
+                state.get("last_attempt_utc")
+            )
+            next_allowed = _parse_time(
+                state.get("next_allowed_utc")
+            )
+
+            if last_attempt and now < last_attempt:
+                raise MarketDataError(
+                    "System clock moved backwards; polling blocked"
+                )
+
+            if next_allowed and now < next_allowed:
+                return {
+                    "allowed": False,
+                    "next_allowed_utc": _iso(next_allowed),
+                    "reason": "Waiting for polling interval",
+                }
+
+            spacing = max(
+                interval_minutes * 60,
+                MIN_REQUEST_SPACING_SECONDS,
+            )
+
+            next_allowed = now + timedelta(
+                seconds=spacing
+            )
+
+            state.update({
+                "last_attempt_utc": _iso(now),
+                "next_allowed_utc": _iso(next_allowed),
+                "last_status": "RESERVED",
+            })
+
+            _save_state(file, state)
+
+            return {
+                "allowed": True,
+                "next_allowed_utc": _iso(next_allowed),
+                "reason": "Poll reserved",
+            }
+        finally:
+            fcntl.flock(file.fileno(), fcntl.LOCK_UN)
+
+
+def record_poll_result(
+    *,
+    status,
+    path=SCHEDULER_PATH,
+    now=None,
+):
+    """Record outcome without shortening an existing cooldown."""
+
+    if status not in ("SUCCESS", "ERROR", "BUDGET_BLOCKED"):
+        raise ValueError("Invalid poll status")
+
+    now = now or utc_now()
+    if now.tzinfo is None:
+        raise ValueError("Result time must have a timezone")
+
+    now = now.astimezone(timezone.utc)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with path.open("a+", encoding="utf-8") as file:
+        fcntl.flock(file.fileno(), fcntl.LOCK_EX)
+
+        try:
+            state = _read_state(file)
+
+            if status != "SUCCESS":
+                candidate = now + timedelta(
+                    seconds=ERROR_BACKOFF_SECONDS
+                )
+
+                current = _parse_time(
+                    state.get("next_allowed_utc")
+                )
+
+                if current is None or candidate > current:
+                    state["next_allowed_utc"] = _iso(candidate)
+
+            state["last_status"] = status
+            state["last_result_utc"] = _iso(now)
+
+            _save_state(file, state)
+        finally:
+            fcntl.flock(file.fileno(), fcntl.LOCK_UN)
+
+
+def read_monitor_state(path=SCHEDULER_PATH):
+    """Read local scheduler status safely."""
+    path = Path(path)
+
+    if not path.exists():
+        return {}
+
+    with path.open("r", encoding="utf-8") as file:
+        fcntl.flock(file.fileno(), fcntl.LOCK_SH)
+
+        try:
+            return _read_state(file)
+        finally:
+            fcntl.flock(file.fileno(), fcntl.LOCK_UN)
+
+
+def run_monitor_poll(
+    config,
+    *,
+    interval_minutes=DEFAULT_POLLING_MINUTES,
+    scheduler_path=SCHEDULER_PATH,
+    fetcher=None,
+    now=None,
+):
+    """Attempt one scheduled fetch.
+
+    One local-machine request slot is shared by all configurations.
+    The underlying client still enforces its own API budget.
+    """
+    now = now or utc_now()
+
+    slot = reserve_poll(
+        interval_minutes=interval_minutes,
+        path=scheduler_path,
+        now=now,
+    )
+
+    if not slot["allowed"]:
+        return {
+            "status": "WAITING",
+            "reason": slot["reason"],
+            "next_allowed_utc": slot["next_allowed_utc"],
+            "result": None,
+        }
+
+    fetch = fetcher or fetch_recent_candles
+
+    try:
+        result = fetch(config)
+
+    except BudgetExceeded:
+        record_poll_result(
+            status="BUDGET_BLOCKED",
+            path=scheduler_path,
+            now=now,
+        )
+        return {
+            "status": "BUDGET_BLOCKED",
+            "reason": "Local API budget exhausted",
+            "result": None,
+        }
+
+    except MarketDataError as exc:
+        record_poll_result(
+            status="ERROR",
+            path=scheduler_path,
+            now=now,
+        )
+        return {
+            "status": "ERROR",
+            "reason": str(exc),
+            "result": None,
+        }
+
+    except Exception:
+        record_poll_result(
+            status="ERROR",
+            path=scheduler_path,
+            now=now,
+        )
+        raise
+
+    record_poll_result(
+        status="SUCCESS",
+        path=scheduler_path,
+        now=now,
+    )
+
+    return {
+        "status": "SUCCESS",
+        "reason": "Market data fetched",
+        "result": result,
+    }
+
+========== dashboard/pages/3_Live_Market_Monitor.py ==========
+
+"""Manual-refresh Twelve Data market monitor."""
+
+import os
+
+import plotly.graph_objects as go
+import streamlit as st
+from dashboard.modern_theme import apply_modern_theme  # STAGE 19 MODERN UI THEME
+
+from config.market_config import (
+    MARKETS,
+    PLATFORMS,
+    TIMEFRAMES,
+    create_research_config,
+)
+from market_data.authorized_live_fetch import fetch_authorized_live_candles
+from market_data.twelve_data_client import (
+    BudgetExceeded,
+    MarketDataError,
+)
+
+st.set_page_config(
+    page_title="Live Market Monitor",
+    page_icon="📡",
+    layout="wide",
+)
+
+apply_modern_theme()
+st.title("Live Market Monitor")
+st.warning(
+    "RESEARCH ONLY. External Twelve Data quotes are not "
+    "verified against Quotex or Olymp Trade. "
+    "No signals, orders or directional backtesting."
+)
+
+platform = st.selectbox(
+    "Research platform",
+    list(PLATFORMS),
+    format_func=lambda p: PLATFORMS[p]["label"],
+)
+
+market = st.selectbox(
+    "Market",
+    list(MARKETS),
+)
+
+symbol = st.selectbox(
+    "Symbol",
+    list(MARKETS[market]),
+)
+
+timeframe = st.selectbox(
+    "Candle timeframe",
+    list(TIMEFRAMES),
+)
+
+polling = st.selectbox(
+    "Preferred refresh interval (manual in Stage 7.2)",
+    [1, 3, 5],
+    index=1,
+    format_func=lambda x: f"{x} minutes",
+)
+
+config = create_research_config(
+    platform=platform,
+    market=market,
+    symbol=symbol,
+    timeframe=timeframe,
+    expiry_minutes=15,
+)
+
+st.caption(
+    f"Selected refresh preference: {polling} minute(s). "
+    "Automatic refresh is NOT enabled."
+)
+
+if not os.environ.get("TWELVE_DATA_API_KEY"):
+    st.error(
+        "TWELVE_DATA_API_KEY is missing. "
+        "Load the .env variables before launching Streamlit."
+    )
+    st.stop()
+
+if st.button("Fetch recent market candles", type="primary"):
+    with st.spinner("Fetching Twelve Data candles..."):
+        try:
+            result = fetch_authorized_live_candles(config)
+        except BudgetExceeded as exc:
+            st.error(f"API budget guard: {exc}")
+        except MarketDataError as exc:
+            st.error(f"Market data unavailable: {exc}")
+        else:
+            st.session_state["live_monitor_result"] = result
+            st.session_state["live_monitor_selection"] = (
+                platform, market, symbol, timeframe
+            )
+
+selection = (platform, market, symbol, timeframe)
+
+if (
+    st.session_state.get("live_monitor_selection")
+    == selection
+):
+    result = st.session_state.get("live_monitor_result")
+
+    if result is not None:
+        a, b, c, d = st.columns(4)
+        a.metric("Candles", result["candles"])
+        b.metric("Timestamp gaps", result["gaps"])
+        c.metric(
+            "Latest candle age",
+            f"{result['age_seconds'] / 60:.1f} min",
+        )
+        d.metric(
+            "Freshness",
+            "STALE" if result["stale"] else "Recent",
+        )
+
+        if result["stale"]:
+            st.error(
+                "Market data is stale under the local "
+                "freshness rule. Do not treat it as current."
+            )
+
+        if result["gaps"]:
+            st.warning(
+                "Timestamp gaps detected. These may reflect "
+                "market closure, missing data or feed issues."
+            )
+
+        frame = result["frame"]
+
+        fig = go.Figure(
+            data=[
+                go.Candlestick(
+                    x=frame["timestamp"],
+                    open=frame["Open"],
+                    high=frame["High"],
+                    low=frame["Low"],
+                    close=frame["Close"],
+                    name=symbol,
+                )
+            ]
+        )
+
+        fig.update_layout(
+            title=f"{symbol} — {timeframe} research candles",
+            xaxis_title="UTC",
+            yaxis_title="Price",
+            height=550,
+            xaxis_rangeslider_visible=False,
+        )
+
+        st.plotly_chart(fig, width="stretch")
+        st.dataframe(frame.tail(20), width="stretch")
+
+        st.caption(
+            "Completed candles only. Feed is unverified "
+            "against the selected trading platform. "
+            "No trade recommendations."
+        )
+
+
+# STAGE 18.2H - PROVIDER CREDIT STATUS
+from market_data.credit_dashboard_status import (
+    get_credit_dashboard_status,
+)
+
+st.divider()
+st.subheader("Twelve Data API Credit Status")
+
+try:
+    credit_status = get_credit_dashboard_status()
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric(
+            "Credits Remaining",
+            credit_status["credits_left"]
+            if credit_status["credits_left"] is not None
+            else "Unknown",
+        )
+
+    with col2:
+        st.metric(
+            "Credits Used",
+            credit_status["credits_used"]
+            if credit_status["credits_used"] is not None
+            else "Unknown",
+        )
+
+    with col3:
+        st.metric("Credit Status", credit_status["status"])
+
+    if credit_status["status"] == "READY":
+        st.success("Provider credit threshold satisfied")
+    elif credit_status["status"] == "LOW_CREDITS":
+        st.warning(credit_status["message"])
+    else:
+        st.info(credit_status["message"])
+
+    st.caption(
+        "Read-only provider snapshot. Actual request authorization "
+        "is enforced separately by the authorization guard."
+    )
+
+except (OSError, ValueError, TypeError) as exc:
+    st.error(f"Provider credit status unavailable: {exc}")
+========== dashboard/pages/4_Auto_Live_Monitor.py ==========
+"""Simple research-only live market dashboard with SQLite history."""
+import json
+import os
+import sqlite3
+from datetime import datetime, timezone
+
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+from dashboard.modern_theme import apply_modern_theme  # STAGE 19 MODERN UI THEME
+
+from analysis.history_recorder import load_history, save_analysis
+from analysis.live_engine import analyze_live_candles
+from analysis.smart_market import assess_market
+from dashboard.signal_readiness import assess_signal_readiness
+from config.market_config import MARKETS, PLATFORMS, TIMEFRAMES, create_research_config
+from market_data.authorized_live_fetch import fetch_authorized_live_candles
+from market_data.provider_credit_guard import ProviderCreditStatusUnknown
+from market_data.live_monitor import read_monitor_state, run_monitor_poll
+from market_data.twelve_data_client import DAY_LIMIT, MarketDataError, STATE_PATH
+
+st.set_page_config(page_title="Simple Live Market Monitor", page_icon="📈", layout="wide")
+apply_modern_theme()
+st.title("📈 Live Market Analysis")
+st.caption("Research only • No automated trades • Broker feed not verified")
+
+with st.sidebar:
+    st.header("Market settings")
+    platform = st.selectbox("Platform (research label)", list(PLATFORMS), format_func=lambda k: PLATFORMS[k]["label"])
+    market = st.selectbox("Market", list(MARKETS))
+    symbol = st.selectbox("Symbol", list(MARKETS[market]))
+    timeframe = st.selectbox("Candle timeframe", list(TIMEFRAMES))
+    refresh_minutes = st.selectbox("Fetch every", [1, 3, 5], index=0, format_func=lambda x: f"{x} minute(s)")
+    st.caption("1-minute candles and 1-minute fetching are different settings.")
+
+selection = (platform, market, symbol, timeframe, refresh_minutes)
+if st.session_state.get("simple_selection") != selection:
+    st.session_state["simple_selection"] = selection
+    st.session_state["simple_running"] = False
+    st.session_state.pop("simple_result", None)
+if "simple_running" not in st.session_state:
+    st.session_state["simple_running"] = False
+
+config = create_research_config(platform=platform, market=market, symbol=symbol, timeframe=timeframe, expiry_minutes=15)
+from market_data.credit_dashboard_status import get_credit_dashboard_status
+
+try:
+    dashboard_credit = get_credit_dashboard_status()
+    credits_ready = dashboard_credit["status"] == "READY"
+except (OSError, ValueError, TypeError):
+    credits_ready = False
+
+if not credits_ready:
+    st.session_state["simple_running"] = False
+    st.warning(
+        "Live monitoring unavailable: provider credit status is "
+        "UNKNOWN or below the configured reserve. "
+        "Offline research remains available."
+    )
+
+start_col, stop_col = st.columns(2)
+with start_col:
+    if st.button("▶ Start live monitoring", width="stretch", disabled=(st.session_state["simple_running"] or not credits_ready)):
+        if not os.environ.get("TWELVE_DATA_API_KEY"):
+            st.error("API key missing. Load TWELVE_DATA_API_KEY before starting Streamlit.")
+        else:
+            st.session_state["simple_running"] = True
+            st.rerun()
+with stop_col:
+    if st.button("■ Stop", width="stretch", disabled=not st.session_state["simple_running"]):
+        st.session_state["simple_running"] = False
+        st.rerun()
+
+st.info("Monitoring ON" if st.session_state["simple_running"] else "Monitoring OFF — press Start to fetch candles")
+
+
+def fmt(value, digits=5):
+    try:
+        return "N/A" if value is None or pd.isna(value) else f"{float(value):.{digits}f}"
+    except (ValueError, TypeError):
+        return "N/A"
+
+
+@st.fragment(run_every="10s")
+def live_panel():
+    if not st.session_state.get("simple_running"):
+        return
+    try:
+        outcome = run_monitor_poll(
+            config,
+            interval_minutes=refresh_minutes,
+            fetcher=fetch_authorized_live_candles,
+        )
+    except ProviderCreditStatusUnknown:
+        st.session_state['simple_running'] = False
+        st.error(
+            'Monitoring stopped: Twelve Data provider credits '
+            'are unknown or the snapshot has expired.'
+        )
+        st.info(
+            'No new request will be attempted by this monitor '
+            'until monitoring is explicitly restarted after '
+            'the provider credit state is reconciled.'
+        )
+        return
+    except (MarketDataError, ValueError, OSError) as exc:
+        st.error(f'Monitoring unavailable: {exc}')
+        return
+
+    status = outcome["status"]
+    if status == "SUCCESS":
+        st.session_state["simple_result"] = outcome["result"]
+        st.session_state["simple_last_fetch"] = datetime.now(timezone.utc).isoformat()
+    elif status == "WAITING":
+        st.caption("Next permitted fetch: " + outcome["next_allowed_utc"])
+    elif status == "BUDGET_BLOCKED":
+        st.error("Local API request budget reached. Fetching paused.")
+    else:
+        st.error("Fetch failed: " + outcome.get("reason", "Unknown error"))
+
+    result = st.session_state.get("simple_result")
+    if result is None:
+        st.info("Waiting for the first successful API fetch.")
+        return
+    try:
+        analysis = analyze_live_candles(result["frame"])
+        enriched = analysis["frame"]
+        latest = analysis["latest"]
+        timestamp = pd.Timestamp(result["latest_utc"])
+        if timestamp.tzinfo is None:
+            raise ValueError("Latest candle has no timezone")
+        age = max(0, (datetime.now(timezone.utc) - timestamp.to_pydatetime()).total_seconds())
+        stale = age > {"1min": 60, "5min": 300, "15min": 900}[timeframe] * 3
+        gaps = result["gaps"]
+    except (ValueError, TypeError, KeyError) as exc:
+        st.error(f"Analysis unavailable: {exc}")
+        return
+
+    if stale or gaps or status != "SUCCESS":
+        st.warning("Caution: " + "; ".join([
+            *(["latest candle is stale"] if stale else []),
+            *([f"{gaps} missing candle interval(s)"] if gaps else []),
+            *(["showing last successful fetch"] if status != "SUCCESS" else []),
+        ]))
+
+    smart = assess_market(analysis, stale=stale, gaps=gaps)
+
+    # Save history only for a newly successful fetch, never on WAITING
+    # fragment reruns. The database operation makes no API requests.
+    if status == "SUCCESS":
+        try:
+            record_id = save_analysis(
+                symbol=config.symbol,
+                timeframe=config.timeframe,
+                analysis=analysis,
+                assessment=smart,
+            )
+            st.caption(f"Analysis history saved (record #{record_id}).")
+        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
+            st.warning(f"Could not save analysis history: {exc}")
+    st.subheader("Directional Signal Readiness")
+    signal_readiness = assess_signal_readiness(
+        expiry_minutes=config.expiry_minutes,
+        stale=stale,
+        gaps=gaps,
+        fetch_status=status,
+        completed_candles=len(enriched),
+        provider_feed_verified=getattr(config, "provider_feed_verified", False),
+        broker_feed_verified=getattr(config, "broker_feed_verified", False),
+    )
+    st.metric("Research signal", signal_readiness["signal"])
+    st.caption(
+        f"Observation expiry: {signal_readiness['expiry_minutes']} minutes. "
+        "Directional signal is blocked until verified feed provenance, "
+        "quality and strategy mapping are available."
+    )
+    with st.expander("Why NO TRADE?", expanded=True):
+        for reason in signal_readiness["reasons"]:
+            st.write("• " + reason)
+    st.caption("Analysis only — no broker connection or automatic execution.")
+
+    st.subheader("Smart Market Assessment")
+    st.metric("Market condition", smart["condition"])
+    st.info(smart["explanation"])
+    st.caption("Research-only indicator alignment, not an expiry or directional prediction.")
+
+    trend = "Mixed / neutral"
+    e9, e21 = latest.get("EMA_9"), latest.get("EMA_21")
+    if pd.notna(e9) and pd.notna(e21):
+        trend = "EMA 9 above EMA 21" if e9 > e21 else ("EMA 9 below EMA 21" if e9 < e21 else "EMAs equal")
+    a, b, c = st.columns(3)
+    a.metric("Latest close", fmt(latest.get("Close")))
+    b.metric("EMA observation", trend)
+    c.metric("Data age", f"{age / 60:.1f} min")
+
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(x=enriched["timestamp"], open=enriched["Open"], high=enriched["High"], low=enriched["Low"], close=enriched["Close"], name="Price"))
+    for key, name in (("EMA_9", "EMA 9"), ("EMA_21", "EMA 21")):
+        fig.add_trace(go.Scatter(x=enriched["timestamp"], y=enriched[key], mode="lines", name=name))
+    fig.update_layout(title=f"{symbol} • {timeframe} completed candles", height=470, xaxis_rangeslider_visible=False, margin=dict(l=15, r=15, t=45, b=20))
+    st.plotly_chart(fig, width="stretch")
+
+    st.subheader("What the indicators say")
+    rsi = latest.get("RSI_14")
+    rsi_text = "Not enough data" if pd.isna(rsi) else ("Above 70: high RSI reading" if rsi > 70 else ("Below 30: low RSI reading" if rsi < 30 else "Between 30–70: middle range"))
+    st.write(f"**RSI 14:** {fmt(rsi, 1)} — {rsi_text}")
+    st.write(f"**EMA 9 / 21:** {trend}. This describes the recent price trend, not the next candle.")
+    for observation in analysis["observations"]:
+        st.caption("• " + observation)
+    st.caption("These observations are not UP/DOWN predictions or trading recommendations.")
+
+    with st.expander("Advanced details (MACD, ATR, patterns, raw candles, credits)"):
+        st.write("**ATR 14:**", fmt(latest.get("ATR_14")))
+        macd_cols = [col for col in enriched.columns if "MACD" in col.upper()]
+        if macd_cols:
+            st.write("**MACD — latest candles**")
+            st.dataframe(enriched[["timestamp"] + macd_cols].tail(5), width="stretch")
+        levels = [col for col in enriched.columns if "support" in col.lower() or "resistance" in col.lower()]
+        if levels:
+            st.write("**Support / resistance**")
+            st.dataframe(enriched[["timestamp"] + levels].tail(3), width="stretch")
+        patterns = analysis["patterns"]
+        cols = ["Pattern", "Pattern_Direction", "Pattern_Description"]
+        if all(col in patterns.columns for col in cols):
+            st.write("**Recent candlestick patterns**")
+            st.dataframe(patterns[["timestamp"] + cols].tail(5), width="stretch")
+        st.write("**Recent completed candles**")
+        st.dataframe(result["frame"].tail(5), width="stretch")
+        try:
+            st.write("**Scheduler:**", read_monitor_state().get("last_status", "Unknown"))
+        except (OSError, ValueError, MarketDataError):
+            st.write("Scheduler state unavailable")
+        try:
+            if STATE_PATH.exists():
+                usage = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+                today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                used = usage.get("day_used", 0) if usage.get("day") == today else 0
+                st.write(f"**Estimated local daily credits:** {used} / {DAY_LIMIT}")
+        except (OSError, ValueError, TypeError):
+            st.write("Credit estimate unavailable")
+
+        st.write("**Recent saved analyses**")
+        try:
+            history = load_history(limit=10)
+            if history:
+                st.dataframe(
+                    pd.DataFrame(history)[
+                        ["recorded_at", "symbol", "timeframe", "market_condition"]
+                    ],
+                    width="stretch",
+                    hide_index=True,
+                )
+            else:
+                st.caption("No saved analysis records yet.")
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            st.caption(f"History unavailable: {exc}")
+
+
+live_panel()
+
+
+# STAGE 18.2H - PROVIDER CREDIT STATUS
+from market_data.credit_dashboard_status import (
+    get_credit_dashboard_status,
+)
+
+st.divider()
+st.subheader("Twelve Data API Credit Status")
+
+try:
+    credit_status = get_credit_dashboard_status()
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric(
+            "Credits Remaining",
+            credit_status["credits_left"]
+            if credit_status["credits_left"] is not None
+            else "Unknown",
+        )
+
+    with col2:
+        st.metric(
+            "Credits Used",
+            credit_status["credits_used"]
+            if credit_status["credits_used"] is not None
+            else "Unknown",
+        )
+
+    with col3:
+        st.metric("Credit Status", credit_status["status"])
+
+    if credit_status["status"] == "READY":
+        st.success("Provider credit threshold satisfied")
+    elif credit_status["status"] == "LOW_CREDITS":
+        st.warning(credit_status["message"])
+    else:
+        st.info(credit_status["message"])
+
+    st.caption(
+        "Read-only provider snapshot. Actual request authorization "
+        "is enforced separately by the authorization guard."
+    )
+
+except (OSError, ValueError, TypeError) as exc:
+    st.error(f"Provider credit status unavailable: {exc}")
+========== notifications/result_notifications.py ==========
+"""Local analysis notifications. No network or trade execution."""
+
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+
+DEFAULT_DB = Path("data/notifications/analysis_notifications.db")
+SIGNALS = {"UP", "DOWN", "NO TRADE"}
+
+
+def record_analysis_notification(
+    *,
+    symbol,
+    timeframe,
+    candle_timestamp,
+    signal,
+    expiry_minutes=15,
+    enabled=True,
+    db_path=DEFAULT_DB,
+):
+    """Store one notification per completed candle and expiry."""
+
+    if type(enabled) is not bool:
+        raise ValueError("enabled must be boolean")
+
+    if not enabled:
+        return {"created": False, "reason": "DISABLED"}
+
+    if signal not in SIGNALS:
+        raise ValueError("Invalid signal")
+
+    if not isinstance(symbol, str) or not symbol.strip():
+        raise ValueError("Invalid symbol")
+
+    if timeframe not in {"1min", "5min", "15min"}:
+        raise ValueError("Invalid timeframe")
+
+    if type(expiry_minutes) is not int or expiry_minutes not in (1, 5, 15):
+        raise ValueError("Invalid expiry")
+
+    stamp = datetime.fromisoformat(
+        str(candle_timestamp).replace("Z", "+00:00")
+    )
+
+    if stamp.tzinfo is None:
+        raise ValueError("Timezone-aware timestamp required")
+
+    stamp = stamp.astimezone(timezone.utc).isoformat()
+
+    path = Path(db_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with sqlite3.connect(path, timeout=10) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS analysis_notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                candle_timestamp TEXT NOT NULL,
+                signal TEXT NOT NULL,
+                expiry_minutes INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE (
+                    symbol,
+                    timeframe,
+                    candle_timestamp,
+                    expiry_minutes
+                )
+            )
+        """)
+
+        cursor = conn.execute("""
+            INSERT OR IGNORE INTO analysis_notifications (
+                symbol, timeframe, candle_timestamp,
+                signal, expiry_minutes, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            symbol.strip(),
+            timeframe,
+            stamp,
+            signal,
+            expiry_minutes,
+            datetime.now(timezone.utc).isoformat(),
+        ))
+
+        created = cursor.rowcount == 1
+
+    return {
+        "created": created,
+        "reason": "NEW_RESULT" if created else "DUPLICATE",
+        "signal": signal,
+        "analysis_only": True,
+        "execution_enabled": False,
+    }
+
+
+def get_notification_history(
+    *,
+    db_path=DEFAULT_DB,
+    limit=50,
+):
+    if type(limit) is not int or not 1 <= limit <= 500:
+        raise ValueError("Invalid history limit")
+
+    path = Path(db_path)
+
+    if not path.exists():
+        return []
+
+    with sqlite3.connect(path) as conn:
+        conn.row_factory = sqlite3.Row
+
+        rows = conn.execute("""
+            SELECT symbol, timeframe, candle_timestamp,
+                   signal, expiry_minutes, created_at
+            FROM analysis_notifications
+            ORDER BY id DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+
+    return [dict(row) for row in rows]
+========== notifications/preferences.py ==========
+"""Local notification preferences. No network requests."""
+
+import json
+import os
+import tempfile
+from pathlib import Path
+
+DEFAULT_PATH = Path("data/notifications/preferences.json")
+
+
+def load_notification_enabled(path=DEFAULT_PATH):
+    path = Path(path)
+
+    if not path.exists():
+        return False
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+
+    if (
+        type(data) is not dict
+        or data.get("version") != 1
+        or type(data.get("enabled")) is not bool
+    ):
+        raise ValueError("Invalid notification preferences")
+
+    return data["enabled"]
+
+
+def save_notification_enabled(enabled, path=DEFAULT_PATH):
+    if type(enabled) is not bool:
+        raise ValueError("Notification setting must be boolean")
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    temporary = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=".notification_preferences_",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+
+            json.dump(
+                {"version": 1, "enabled": enabled},
+                handle,
+            )
+
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        os.replace(temporary, path)
+
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+    return enabled
+========== MONITOR CALLERS ==========
+========== MONITOR CALLERS ==========
+analysis/live_engine.py:10:def analyze_live_candles(frame: pd.DataFrame) -> dict:
+analysis/historical_signal_comparison.py:7:from strategy.signal_engine import generate_signal
+analysis/historical_signal_comparison.py:55:    signal_result = generate_signal(
+market_data/live_monitor.py:214:def run_monitor_poll(
+dashboard/offline_advanced.py:5:from analysis.live_engine import analyze_live_candles
+dashboard/offline_advanced.py:19:    analysis = analyze_live_candles(frame.copy(deep=True))
+dashboard/pages/4_Auto_Live_Monitor.py:13:from analysis.live_engine import analyze_live_candles
+dashboard/pages/4_Auto_Live_Monitor.py:19:from market_data.live_monitor import read_monitor_state, run_monitor_poll
+dashboard/pages/4_Auto_Live_Monitor.py:89:        outcome = run_monitor_poll(
+dashboard/pages/4_Auto_Live_Monitor.py:126:        analysis = analyze_live_candles(result["frame"])
+dashboard/pages/5_Offline_Market_Analysis.py:251:from analysis.live_engine import analyze_live_candles
+dashboard/pages/5_Offline_Market_Analysis.py:284:        historical_analysis = analyze_live_candles(

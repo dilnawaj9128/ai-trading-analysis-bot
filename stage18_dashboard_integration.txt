@@ -1,0 +1,318 @@
+=== Manual dashboard fetch calls ===
+11-    PLATFORMS,
+12-    TIMEFRAMES,
+13-    create_research_config,
+14-)
+15-from market_data.twelve_data_client import (
+16:    BudgetExceeded,
+17:    MarketDataError,
+18:    fetch_recent_candles,
+19-)
+20-
+21-st.set_page_config(
+22-    page_title="Live Market Monitor",
+23-    page_icon="📡",
+--
+80-    st.stop()
+81-
+82-if st.button("Fetch recent market candles", type="primary"):
+83-    with st.spinner("Fetching Twelve Data candles..."):
+84-        try:
+85:            result = fetch_recent_candles(config)
+86:        except BudgetExceeded as exc:
+87-            st.error(f"API budget guard: {exc}")
+88:        except MarketDataError as exc:
+89-            st.error(f"Market data unavailable: {exc}")
+90-        else:
+91-            st.session_state["live_monitor_result"] = result
+92-            st.session_state["live_monitor_selection"] = (
+93-                platform, market, symbol, timeframe
+=== Auto scheduler fetch calls ===
+market_data/live_monitor.py-6-import fcntl
+market_data/live_monitor.py-7-import json
+market_data/live_monitor.py-8-import os
+market_data/live_monitor.py-9-from datetime import datetime, timedelta, timezone
+market_data/live_monitor.py-10-from pathlib import Path
+market_data/live_monitor.py-11-
+market_data/live_monitor.py-12-from market_data.twelve_data_client import (
+market_data/live_monitor.py-13-    BudgetExceeded,
+market_data/live_monitor.py:14:    MarketDataError,
+market_data/live_monitor.py:15:    fetch_recent_candles,
+market_data/live_monitor.py-16-)
+market_data/live_monitor.py-17-
+market_data/live_monitor.py-18-POLLING_MINUTES = (1, 3, 5)
+market_data/live_monitor.py-19-DEFAULT_POLLING_MINUTES = 3
+market_data/live_monitor.py-20-
+market_data/live_monitor.py-21-# Global local-machine spacing, regardless of symbol or browser session.
+market_data/live_monitor.py-22-MIN_REQUEST_SPACING_SECONDS = 60
+market_data/live_monitor.py-23-ERROR_BACKOFF_SECONDS = 180
+--
+market_data/live_monitor.py-36-
+market_data/live_monitor.py-37-
+market_data/live_monitor.py-38-def _parse_time(value):
+market_data/live_monitor.py-39-    if not value:
+market_data/live_monitor.py-40-        return None
+market_data/live_monitor.py-41-
+market_data/live_monitor.py-42-    dt = datetime.fromisoformat(value)
+market_data/live_monitor.py-43-    if dt.tzinfo is None:
+market_data/live_monitor.py:44:        raise MarketDataError("Scheduler timestamp lacks timezone")
+market_data/live_monitor.py-45-
+market_data/live_monitor.py-46-    return dt.astimezone(timezone.utc)
+market_data/live_monitor.py-47-
+market_data/live_monitor.py-48-
+market_data/live_monitor.py-49-def _read_state(file):
+market_data/live_monitor.py-50-    file.seek(0)
+market_data/live_monitor.py-51-    raw = file.read()
+market_data/live_monitor.py-52-
+market_data/live_monitor.py-53-    if not raw.strip():
+market_data/live_monitor.py-54-        return {}
+market_data/live_monitor.py-55-
+market_data/live_monitor.py-56-    try:
+market_data/live_monitor.py-57-        state = json.loads(raw)
+market_data/live_monitor.py-58-    except json.JSONDecodeError as exc:
+market_data/live_monitor.py:59:        raise MarketDataError(
+market_data/live_monitor.py-60-            "Scheduler state corrupted; polling blocked"
+market_data/live_monitor.py-61-        ) from exc
+market_data/live_monitor.py-62-
+market_data/live_monitor.py-63-    if not isinstance(state, dict):
+market_data/live_monitor.py:64:        raise MarketDataError("Invalid scheduler state")
+market_data/live_monitor.py-65-
+market_data/live_monitor.py-66-    return state
+market_data/live_monitor.py-67-
+market_data/live_monitor.py-68-
+market_data/live_monitor.py-69-def _save_state(file, state):
+market_data/live_monitor.py-70-    file.seek(0)
+market_data/live_monitor.py-71-    file.truncate()
+market_data/live_monitor.py-72-    json.dump(state, file, indent=2)
+--
+market_data/live_monitor.py-108-            last_attempt = _parse_time(
+market_data/live_monitor.py-109-                state.get("last_attempt_utc")
+market_data/live_monitor.py-110-            )
+market_data/live_monitor.py-111-            next_allowed = _parse_time(
+market_data/live_monitor.py-112-                state.get("next_allowed_utc")
+market_data/live_monitor.py-113-            )
+market_data/live_monitor.py-114-
+market_data/live_monitor.py-115-            if last_attempt and now < last_attempt:
+market_data/live_monitor.py:116:                raise MarketDataError(
+market_data/live_monitor.py-117-                    "System clock moved backwards; polling blocked"
+market_data/live_monitor.py-118-                )
+market_data/live_monitor.py-119-
+market_data/live_monitor.py-120-            if next_allowed and now < next_allowed:
+market_data/live_monitor.py-121-                return {
+market_data/live_monitor.py-122-                    "allowed": False,
+market_data/live_monitor.py-123-                    "next_allowed_utc": _iso(next_allowed),
+market_data/live_monitor.py-124-                    "reason": "Waiting for polling interval",
+--
+market_data/live_monitor.py-206-        fcntl.flock(file.fileno(), fcntl.LOCK_SH)
+market_data/live_monitor.py-207-
+market_data/live_monitor.py-208-        try:
+market_data/live_monitor.py-209-            return _read_state(file)
+market_data/live_monitor.py-210-        finally:
+market_data/live_monitor.py-211-            fcntl.flock(file.fileno(), fcntl.LOCK_UN)
+market_data/live_monitor.py-212-
+market_data/live_monitor.py-213-
+market_data/live_monitor.py:214:def run_monitor_poll(
+market_data/live_monitor.py-215-    config,
+market_data/live_monitor.py-216-    *,
+market_data/live_monitor.py-217-    interval_minutes=DEFAULT_POLLING_MINUTES,
+market_data/live_monitor.py-218-    scheduler_path=SCHEDULER_PATH,
+market_data/live_monitor.py-219-    fetcher=None,
+market_data/live_monitor.py-220-    now=None,
+market_data/live_monitor.py-221-):
+market_data/live_monitor.py-222-    """Attempt one scheduled fetch.
+--
+market_data/live_monitor.py-235-    if not slot["allowed"]:
+market_data/live_monitor.py-236-        return {
+market_data/live_monitor.py-237-            "status": "WAITING",
+market_data/live_monitor.py-238-            "reason": slot["reason"],
+market_data/live_monitor.py-239-            "next_allowed_utc": slot["next_allowed_utc"],
+market_data/live_monitor.py-240-            "result": None,
+market_data/live_monitor.py-241-        }
+market_data/live_monitor.py-242-
+market_data/live_monitor.py:243:    fetch = fetcher or fetch_recent_candles
+market_data/live_monitor.py-244-
+market_data/live_monitor.py-245-    try:
+market_data/live_monitor.py-246-        result = fetch(config)
+market_data/live_monitor.py-247-
+market_data/live_monitor.py-248-    except BudgetExceeded:
+market_data/live_monitor.py-249-        record_poll_result(
+market_data/live_monitor.py-250-            status="BUDGET_BLOCKED",
+market_data/live_monitor.py-251-            path=scheduler_path,
+market_data/live_monitor.py-252-            now=now,
+market_data/live_monitor.py-253-        )
+market_data/live_monitor.py-254-        return {
+market_data/live_monitor.py-255-            "status": "BUDGET_BLOCKED",
+market_data/live_monitor.py-256-            "reason": "Local API budget exhausted",
+market_data/live_monitor.py-257-            "result": None,
+market_data/live_monitor.py-258-        }
+market_data/live_monitor.py-259-
+market_data/live_monitor.py:260:    except MarketDataError as exc:
+market_data/live_monitor.py-261-        record_poll_result(
+market_data/live_monitor.py-262-            status="ERROR",
+market_data/live_monitor.py-263-            path=scheduler_path,
+market_data/live_monitor.py-264-            now=now,
+market_data/live_monitor.py-265-        )
+market_data/live_monitor.py-266-        return {
+market_data/live_monitor.py-267-            "status": "ERROR",
+market_data/live_monitor.py-268-            "reason": str(exc),
+--
+dashboard/pages/4_Auto_Live_Monitor.py-7-import pandas as pd
+dashboard/pages/4_Auto_Live_Monitor.py-8-import plotly.graph_objects as go
+dashboard/pages/4_Auto_Live_Monitor.py-9-import streamlit as st
+dashboard/pages/4_Auto_Live_Monitor.py-10-
+dashboard/pages/4_Auto_Live_Monitor.py-11-from analysis.history_recorder import load_history, save_analysis
+dashboard/pages/4_Auto_Live_Monitor.py-12-from analysis.live_engine import analyze_live_candles
+dashboard/pages/4_Auto_Live_Monitor.py-13-from analysis.smart_market import assess_market
+dashboard/pages/4_Auto_Live_Monitor.py-14-from config.market_config import MARKETS, PLATFORMS, TIMEFRAMES, create_research_config
+dashboard/pages/4_Auto_Live_Monitor.py:15:from market_data.live_monitor import read_monitor_state, run_monitor_poll
+dashboard/pages/4_Auto_Live_Monitor.py:16:from market_data.twelve_data_client import DAY_LIMIT, MarketDataError, STATE_PATH
+dashboard/pages/4_Auto_Live_Monitor.py-17-
+dashboard/pages/4_Auto_Live_Monitor.py-18-st.set_page_config(page_title="Simple Live Market Monitor", page_icon="📈", layout="wide")
+dashboard/pages/4_Auto_Live_Monitor.py-19-st.title("📈 Live Market Analysis")
+dashboard/pages/4_Auto_Live_Monitor.py-20-st.caption("Research only • No automated trades • Broker feed not verified")
+dashboard/pages/4_Auto_Live_Monitor.py-21-
+dashboard/pages/4_Auto_Live_Monitor.py-22-with st.sidebar:
+dashboard/pages/4_Auto_Live_Monitor.py-23-    st.header("Market settings")
+dashboard/pages/4_Auto_Live_Monitor.py-24-    platform = st.selectbox("Platform (research label)", list(PLATFORMS), format_func=lambda k: PLATFORMS[k]["label"])
+--
+dashboard/pages/4_Auto_Live_Monitor.py-60-        return "N/A"
+dashboard/pages/4_Auto_Live_Monitor.py-61-
+dashboard/pages/4_Auto_Live_Monitor.py-62-
+dashboard/pages/4_Auto_Live_Monitor.py-63-@st.fragment(run_every="10s")
+dashboard/pages/4_Auto_Live_Monitor.py-64-def live_panel():
+dashboard/pages/4_Auto_Live_Monitor.py-65-    if not st.session_state.get("simple_running"):
+dashboard/pages/4_Auto_Live_Monitor.py-66-        return
+dashboard/pages/4_Auto_Live_Monitor.py-67-    try:
+dashboard/pages/4_Auto_Live_Monitor.py:68:        outcome = run_monitor_poll(config, interval_minutes=refresh_minutes)
+dashboard/pages/4_Auto_Live_Monitor.py:69:    except (MarketDataError, ValueError, OSError) as exc:
+dashboard/pages/4_Auto_Live_Monitor.py-70-        st.error(f"Monitoring unavailable: {exc}")
+dashboard/pages/4_Auto_Live_Monitor.py-71-        return
+dashboard/pages/4_Auto_Live_Monitor.py-72-
+dashboard/pages/4_Auto_Live_Monitor.py-73-    status = outcome["status"]
+dashboard/pages/4_Auto_Live_Monitor.py-74-    if status == "SUCCESS":
+dashboard/pages/4_Auto_Live_Monitor.py-75-        st.session_state["simple_result"] = outcome["result"]
+dashboard/pages/4_Auto_Live_Monitor.py-76-        st.session_state["simple_last_fetch"] = datetime.now(timezone.utc).isoformat()
+dashboard/pages/4_Auto_Live_Monitor.py-77-    elif status == "WAITING":
+--
+dashboard/pages/4_Auto_Live_Monitor.py-165-        cols = ["Pattern", "Pattern_Direction", "Pattern_Description"]
+dashboard/pages/4_Auto_Live_Monitor.py-166-        if all(col in patterns.columns for col in cols):
+dashboard/pages/4_Auto_Live_Monitor.py-167-            st.write("**Recent candlestick patterns**")
+dashboard/pages/4_Auto_Live_Monitor.py-168-            st.dataframe(patterns[["timestamp"] + cols].tail(5), use_container_width=True)
+dashboard/pages/4_Auto_Live_Monitor.py-169-        st.write("**Recent completed candles**")
+dashboard/pages/4_Auto_Live_Monitor.py-170-        st.dataframe(result["frame"].tail(5), use_container_width=True)
+dashboard/pages/4_Auto_Live_Monitor.py-171-        try:
+dashboard/pages/4_Auto_Live_Monitor.py-172-            st.write("**Scheduler:**", read_monitor_state().get("last_status", "Unknown"))
+dashboard/pages/4_Auto_Live_Monitor.py:173:        except (OSError, ValueError, MarketDataError):
+dashboard/pages/4_Auto_Live_Monitor.py-174-            st.write("Scheduler state unavailable")
+dashboard/pages/4_Auto_Live_Monitor.py-175-        try:
+dashboard/pages/4_Auto_Live_Monitor.py-176-            if STATE_PATH.exists():
+dashboard/pages/4_Auto_Live_Monitor.py-177-                usage = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+dashboard/pages/4_Auto_Live_Monitor.py-178-                today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+dashboard/pages/4_Auto_Live_Monitor.py-179-                used = usage.get("day_used", 0) if usage.get("day") == today else 0
+dashboard/pages/4_Auto_Live_Monitor.py-180-                st.write(f"**Estimated local daily credits:** {used} / {DAY_LIMIT}")
+dashboard/pages/4_Auto_Live_Monitor.py-181-        except (OSError, ValueError, TypeError):
+=== Current authorized fetch ===
+"""Authorized Twelve Data live research fetch. No broker execution."""
+
+import os
+from datetime import timezone
+
+import requests
+
+from config.market_config import create_research_config
+from market_data import twelve_data_client as td
+from market_data.authorization_ledger import transition_authorization
+from market_data.credit_response_handler import refresh_credits_from_response
+from market_data.provider_credit_state import DEFAULT_PATH
+from market_data.unified_request_guard import authorize_request
+
+
+def fetch_authorized_live_candles(
+    config,
+    *,
+    api_key=None,
+    state_path=td.STATE_PATH,
+    provider_credit_path=DEFAULT_PATH,
+    now=None,
+    session=None,
+):
+    """Validate, authorize once, fetch once, and preserve reservation evidence."""
+
+    validated = create_research_config(
+        config.platform,
+        config.market,
+        config.symbol,
+        config.timeframe,
+        config.expiry_minutes,
+    )
+    if config != validated:
+        raise td.MarketDataError("Unsafe or modified research config")
+
+    key = api_key if api_key is not None else os.environ.get(
+        "TWELVE_DATA_API_KEY"
+    )
+    if not key:
+        raise td.MarketDataError("TWELVE_DATA_API_KEY is missing")
+
+    now = now if now is not None else td.utc_now()
+    if now.tzinfo is None:
+        raise td.MarketDataError("Current time must have a timezone")
+    now = now.astimezone(timezone.utc)
+
+    # This call already reserves the local request budget.
+    authorization = authorize_request(
+        provider_state_path=provider_credit_path,
+        local_budget_path=state_path,
+        now=now,
+    )
+
+    if (
+        not authorization.authorized
+        or not authorization.local_budget_reserved
+        or not authorization.request_id
+    ):
+        raise td.MarketDataError("Incomplete request authorization")
+
+    client = session if session is not None else requests
+
+    try:
+        response = client.get(
+            td.API_URL,
+            params={
+                "symbol": config.symbol,
+                "interval": config.timeframe,
+                "outputsize": td.MAX_CANDLES,
+                "timezone": "UTC",
+                "apikey": key,
+                "format": "JSON",
+            },
+            timeout=td.TIMEOUT_SECONDS,
+        )
+
+        response.raise_for_status()
+        payload = response.json()
+        result = td.parse_candles(payload, config, now=now)
+
+        # A response snapshot does not settle this reservation.
+        refresh_credits_from_response(
+            response,
+            path=provider_credit_path,
+            now=now,
+        )
+
+        return result
+
+    except Exception as exc:
+        # Keep credits reserved after an uncertain request outcome.
+        transition_authorization(
+            provider_state_path=provider_credit_path,
+            request_id=authorization.request_id,
+            status="UNCERTAIN",
+        )
+
+        if isinstance(exc, td.MarketDataError):
+            raise
+
+        raise td.MarketDataError(
+            "Authorized live fetch failed; reservation retained"
+        ) from exc

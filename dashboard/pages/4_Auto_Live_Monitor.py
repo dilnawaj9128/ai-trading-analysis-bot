@@ -7,15 +7,20 @@ from datetime import datetime, timezone
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from dashboard.modern_theme import apply_modern_theme  # STAGE 19 MODERN UI THEME
 
 from analysis.history_recorder import load_history, save_analysis
 from analysis.live_engine import analyze_live_candles
 from analysis.smart_market import assess_market
+from dashboard.signal_readiness import assess_signal_readiness
 from config.market_config import MARKETS, PLATFORMS, TIMEFRAMES, create_research_config
+from market_data.authorized_live_fetch import fetch_authorized_live_candles
+from market_data.provider_credit_guard import ProviderCreditStatusUnknown
 from market_data.live_monitor import read_monitor_state, run_monitor_poll
 from market_data.twelve_data_client import DAY_LIMIT, MarketDataError, STATE_PATH
 
 st.set_page_config(page_title="Simple Live Market Monitor", page_icon="📈", layout="wide")
+apply_modern_theme()
 st.title("📈 Live Market Analysis")
 st.caption("Research only • No automated trades • Broker feed not verified")
 
@@ -37,16 +42,32 @@ if "simple_running" not in st.session_state:
     st.session_state["simple_running"] = False
 
 config = create_research_config(platform=platform, market=market, symbol=symbol, timeframe=timeframe, expiry_minutes=15)
+from market_data.credit_dashboard_status import get_credit_dashboard_status
+
+try:
+    dashboard_credit = get_credit_dashboard_status()
+    credits_ready = dashboard_credit["status"] == "READY"
+except (OSError, ValueError, TypeError):
+    credits_ready = False
+
+if not credits_ready:
+    st.session_state["simple_running"] = False
+    st.warning(
+        "Live monitoring unavailable: provider credit status is "
+        "UNKNOWN or below the configured reserve. "
+        "Offline research remains available."
+    )
+
 start_col, stop_col = st.columns(2)
 with start_col:
-    if st.button("▶ Start live monitoring", use_container_width=True, disabled=st.session_state["simple_running"]):
+    if st.button("▶ Start live monitoring", width="stretch", disabled=(st.session_state["simple_running"] or not credits_ready)):
         if not os.environ.get("TWELVE_DATA_API_KEY"):
             st.error("API key missing. Load TWELVE_DATA_API_KEY before starting Streamlit.")
         else:
             st.session_state["simple_running"] = True
             st.rerun()
 with stop_col:
-    if st.button("■ Stop", use_container_width=True, disabled=not st.session_state["simple_running"]):
+    if st.button("■ Stop", width="stretch", disabled=not st.session_state["simple_running"]):
         st.session_state["simple_running"] = False
         st.rerun()
 
@@ -65,9 +86,25 @@ def live_panel():
     if not st.session_state.get("simple_running"):
         return
     try:
-        outcome = run_monitor_poll(config, interval_minutes=refresh_minutes)
+        outcome = run_monitor_poll(
+            config,
+            interval_minutes=refresh_minutes,
+            fetcher=fetch_authorized_live_candles,
+        )
+    except ProviderCreditStatusUnknown:
+        st.session_state['simple_running'] = False
+        st.error(
+            'Monitoring stopped: Twelve Data provider credits '
+            'are unknown or the snapshot has expired.'
+        )
+        st.info(
+            'No new request will be attempted by this monitor '
+            'until monitoring is explicitly restarted after '
+            'the provider credit state is reconciled.'
+        )
+        return
     except (MarketDataError, ValueError, OSError) as exc:
-        st.error(f"Monitoring unavailable: {exc}")
+        st.error(f'Monitoring unavailable: {exc}')
         return
 
     status = outcome["status"]
@@ -121,6 +158,74 @@ def live_panel():
             st.caption(f"Analysis history saved (record #{record_id}).")
         except (OSError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
             st.warning(f"Could not save analysis history: {exc}")
+    st.subheader("Directional Signal Readiness")
+    signal_readiness = assess_signal_readiness(
+        expiry_minutes=config.expiry_minutes,
+        stale=stale,
+        gaps=gaps,
+        fetch_status=status,
+        completed_candles=len(enriched),
+        provider_feed_verified=getattr(config, "provider_feed_verified", False),
+        broker_feed_verified=getattr(config, "broker_feed_verified", False),
+    )
+    st.metric("Research signal", signal_readiness["signal"])
+    st.caption(
+        f"Observation expiry: {signal_readiness['expiry_minutes']} minutes. "
+        "Directional signal is blocked until verified feed provenance, "
+        "quality and strategy mapping are available."
+    )
+    with st.expander("Why NO TRADE?", expanded=True):
+        for reason in signal_readiness["reasons"]:
+            st.write("• " + reason)
+    st.caption("Analysis only — no broker connection or automatic execution.")
+
+    # STAGE 22C: local research notifications, never broker execution.
+    if status == "SUCCESS":
+        try:
+            from notifications.analysis_events import (
+                record_monitor_analysis_event,
+            )
+
+            notice = record_monitor_analysis_event(
+                config=config,
+                frame=result["frame"],
+                fetch_status=status,
+                signal_readiness=signal_readiness,
+                stale=stale,
+                gaps=gaps,
+            )
+
+            if notice["created"]:
+                st.toast(
+                    "New NO TRADE research status recorded",
+                    icon="🔔",
+                )
+
+                from notifications.delivery_tracker import (
+                    deliver_once,
+                )
+
+                delivery = deliver_once({
+                    "symbol": config.symbol,
+                    "timeframe": config.timeframe,
+                    "candle_timestamp": str(
+                        result["frame"]["timestamp"].iloc[-1]
+                    ),
+                    "expiry_minutes": config.expiry_minutes,
+                    "signal": "NO TRADE",
+                    "source": "LIVE_RESEARCH",
+                })
+
+                st.caption(
+                    "External alerts — Telegram: "
+                    + delivery["telegram"]
+                    + " | Email: "
+                    + delivery["email"]
+                )
+        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
+            st.warning(f"Notification unavailable: {exc}")
+
+
     st.subheader("Smart Market Assessment")
     st.metric("Market condition", smart["condition"])
     st.info(smart["explanation"])
@@ -140,7 +245,7 @@ def live_panel():
     for key, name in (("EMA_9", "EMA 9"), ("EMA_21", "EMA 21")):
         fig.add_trace(go.Scatter(x=enriched["timestamp"], y=enriched[key], mode="lines", name=name))
     fig.update_layout(title=f"{symbol} • {timeframe} completed candles", height=470, xaxis_rangeslider_visible=False, margin=dict(l=15, r=15, t=45, b=20))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     st.subheader("What the indicators say")
     rsi = latest.get("RSI_14")
@@ -156,18 +261,18 @@ def live_panel():
         macd_cols = [col for col in enriched.columns if "MACD" in col.upper()]
         if macd_cols:
             st.write("**MACD — latest candles**")
-            st.dataframe(enriched[["timestamp"] + macd_cols].tail(5), use_container_width=True)
+            st.dataframe(enriched[["timestamp"] + macd_cols].tail(5), width="stretch")
         levels = [col for col in enriched.columns if "support" in col.lower() or "resistance" in col.lower()]
         if levels:
             st.write("**Support / resistance**")
-            st.dataframe(enriched[["timestamp"] + levels].tail(3), use_container_width=True)
+            st.dataframe(enriched[["timestamp"] + levels].tail(3), width="stretch")
         patterns = analysis["patterns"]
         cols = ["Pattern", "Pattern_Direction", "Pattern_Description"]
         if all(col in patterns.columns for col in cols):
             st.write("**Recent candlestick patterns**")
-            st.dataframe(patterns[["timestamp"] + cols].tail(5), use_container_width=True)
+            st.dataframe(patterns[["timestamp"] + cols].tail(5), width="stretch")
         st.write("**Recent completed candles**")
-        st.dataframe(result["frame"].tail(5), use_container_width=True)
+        st.dataframe(result["frame"].tail(5), width="stretch")
         try:
             st.write("**Scheduler:**", read_monitor_state().get("last_status", "Unknown"))
         except (OSError, ValueError, MarketDataError):
@@ -189,7 +294,7 @@ def live_panel():
                     pd.DataFrame(history)[
                         ["recorded_at", "symbol", "timeframe", "market_condition"]
                     ],
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                 )
             else:
@@ -199,3 +304,51 @@ def live_panel():
 
 
 live_panel()
+
+
+# STAGE 18.2H - PROVIDER CREDIT STATUS
+from market_data.credit_dashboard_status import (
+    get_credit_dashboard_status,
+)
+
+st.divider()
+st.subheader("Twelve Data API Credit Status")
+
+try:
+    credit_status = get_credit_dashboard_status()
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric(
+            "Credits Remaining",
+            credit_status["credits_left"]
+            if credit_status["credits_left"] is not None
+            else "Unknown",
+        )
+
+    with col2:
+        st.metric(
+            "Credits Used",
+            credit_status["credits_used"]
+            if credit_status["credits_used"] is not None
+            else "Unknown",
+        )
+
+    with col3:
+        st.metric("Credit Status", credit_status["status"])
+
+    if credit_status["status"] == "READY":
+        st.success("Provider credit threshold satisfied")
+    elif credit_status["status"] == "LOW_CREDITS":
+        st.warning(credit_status["message"])
+    else:
+        st.info(credit_status["message"])
+
+    st.caption(
+        "Read-only provider snapshot. Actual request authorization "
+        "is enforced separately by the authorization guard."
+    )
+
+except (OSError, ValueError, TypeError) as exc:
+    st.error(f"Provider credit status unavailable: {exc}")

@@ -56,7 +56,7 @@ def test_fresh_sufficient_credits(tmp_path):
 
 
 def test_low_credits_blocked(tmp_path):
-    path = make_state(tmp_path, 10)
+    path = make_state(tmp_path, 1)
 
     result = decide_credit_bootstrap(path=path, now=NOW)
 
@@ -64,7 +64,7 @@ def test_low_credits_blocked(tmp_path):
 
 
 def test_low_credits_not_bypassed_by_approval(tmp_path):
-    path = make_state(tmp_path, 10)
+    path = make_state(tmp_path, 1)
 
     result = decide_credit_bootstrap(
         path=path,
@@ -112,7 +112,7 @@ def test_unknown_remaining_requires_approval(tmp_path):
 
 
 def test_exact_credit_boundary(tmp_path):
-    path = make_state(tmp_path, 21)
+    path = make_state(tmp_path, 2)
 
     result = decide_credit_bootstrap(path=path, now=NOW)
 

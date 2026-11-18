@@ -88,7 +88,7 @@ def test_existing_low_credits_cannot_be_bypassed(tmp_path):
     save_credit_state(
         CreditSnapshot(
             credits_used=1,
-            credits_left=5,
+            credits_left=1,
             low_credits=True,
             information_available=True,
         ),

@@ -1,0 +1,79 @@
+===== DASHBOARD FILES =====
+dashboard/app.py
+dashboard/chart_data.py
+dashboard/__init__.py
+dashboard/pages/1_Candlestick_Research.py
+dashboard/pages/2_Market_Configuration.py
+dashboard/pages/3_Live_Market_Monitor.py
+dashboard/pages/4_Auto_Live_Monitor.py
+dashboard/report_loader.py
+===== SIGNAL ENGINE FILES =====
+analysis/adaptive_collection_decision.py
+analysis/adaptive_training_controller.py
+analysis/checkpoint_collection_planner.py
+analysis/data_coverage.py
+analysis/exact_collection_planner.py
+analysis/historical_integrity_audit.py
+analysis/history_recorder.py
+analysis/live_engine.py
+analysis/ml_trainer.py
+analysis/outcome_tracker.py
+analysis/smart_market.py
+analysis/training_dataset.py
+analysis/walk_forward.py
+strategy/explanations.py
+strategy/__init__.py
+strategy/market_filter.py
+strategy/signal_engine.py
+strategy/trend_analysis.py
+===== DASHBOARD SIGNAL REFERENCES =====
+dashboard/pages/2_Market_Configuration.py:74:            expiry_minutes=expiry,
+dashboard/pages/3_Live_Market_Monitor.py:67:    expiry_minutes=15,
+dashboard/pages/4_Auto_Live_Monitor.py:16:from market_data.live_monitor import read_monitor_state, run_monitor_poll
+dashboard/pages/4_Auto_Live_Monitor.py:40:config = create_research_config(platform=platform, market=market, symbol=symbol, timeframe=timeframe, expiry_minutes=15)
+dashboard/pages/4_Auto_Live_Monitor.py:69:        outcome = run_monitor_poll(
+dashboard/pages/4_Auto_Live_Monitor.py:157:    st.caption("These observations are not UP/DOWN predictions or trading recommendations.")
+===== CURRENT GIT STATUS =====
+ M dashboard/app.py
+ M dashboard/pages/1_Candlestick_Research.py
+ M dashboard/pages/3_Live_Market_Monitor.py
+ M dashboard/pages/4_Auto_Live_Monitor.py
+?? market_data/authorized_live_fetch.py
+?? market_data/credit_dashboard_status.py
+?? market_data/credit_refresh_approval.py
+?? market_data/credit_refresh_coordinator.py
+?? market_data/credit_refresh_lifecycle.py
+?? market_data/credit_refresh_policy.py
+?? market_data/credit_refresh_store.py
+?? stage18_2i_c_authorization_review.txt
+?? stage18_2i_c_final_review.txt
+?? stage18_2i_e_test_review.txt
+?? stage18_2i_f_integration_review.txt
+?? stage18_2i_g_callers.txt
+?? stage18_2i_g_review.txt
+?? stage18_2i_h_review.txt
+?? stage18_api_safety_audit.txt
+?? stage18_authorization_contract.txt
+?? stage18_bootstrap_review.txt
+?? stage18_credit_probe_review.txt
+?? stage18_credit_refresh_review.txt
+?? stage18_credit_refresh_source.txt
+?? stage18_dashboard_audit.txt
+?? stage18_dashboard_integration.txt
+?? stage18_first_real_fetch_review.txt
+?? stage18_integration_review.txt
+?? stage18_integration_tests.txt
+?? stage18_live_patch_review.txt
+?? stage18_phase2a_review.txt
+?? stage18_real_api_readiness.txt
+?? stage19_dashboard_review.txt
+?? tests/test_authorized_live_fetch.py
+?? tests/test_authorized_live_integration.py
+?? tests/test_credit_dashboard_status.py
+?? tests/test_credit_refresh_approval.py
+?? tests/test_credit_refresh_coordinator.py
+?? tests/test_credit_refresh_lifecycle.py
+?? tests/test_credit_refresh_policy.py
+?? tests/test_credit_refresh_safety_gaps.py
+?? tests/test_credit_refresh_stage18_h.py
+?? tests/test_credit_refresh_store.py

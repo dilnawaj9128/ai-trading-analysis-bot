@@ -1,0 +1,335 @@
+=== Provider credit initialization ===
+market_data/credit_response_handler.py:17:    save_credit_state,
+market_data/credit_response_handler.py:28:def refresh_credits_from_response(
+market_data/credit_response_handler.py:122:            save_credit_state(
+market_data/provider_credit_state.py:21:def save_credit_state(
+market_data/historical_collector.py:22:from market_data.credit_response_handler import refresh_credits_from_response
+market_data/historical_collector.py:102:            refresh_credits_from_response(
+market_data/api_credit_monitor.py:49:        normalized.get("api-credits-left")
+market_data/bootstrap_request_coordinator.py:13:    refresh_credits_from_response,
+market_data/bootstrap_request_coordinator.py:92:    refresh = refresh_credits_from_response(
+market_data/authorized_live_fetch.py:11:from market_data.credit_response_handler import refresh_credits_from_response
+market_data/authorized_live_fetch.py:83:        refresh_credits_from_response(
+=== Provider credit state ===
+"""Persistent provider credit state. No API calls."""
+
+import json
+import os
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+from market_data.api_credit_monitor import CreditSnapshot
+
+
+DEFAULT_PATH = Path("data/api_usage/provider_credits.json")
+
+
+def _utc(value):
+    if value.tzinfo is None:
+        raise ValueError("Timezone-aware datetime required")
+    return value.astimezone(timezone.utc)
+
+
+def save_credit_state(
+    snapshot: CreditSnapshot,
+    *,
+    path=DEFAULT_PATH,
+    now=None,
+):
+    if not isinstance(snapshot, CreditSnapshot):
+        raise ValueError("CreditSnapshot required")
+
+    if snapshot.credits_left is not None and (
+        type(snapshot.credits_left) is not int
+        or snapshot.credits_left < 0
+    ):
+        raise ValueError("Invalid credits_left")
+
+    if snapshot.credits_used is not None and (
+        type(snapshot.credits_used) is not int
+        or snapshot.credits_used < 0
+    ):
+        raise ValueError("Invalid credits_used")
+
+    now = _utc(now or datetime.now(timezone.utc))
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "version": 1,
+        "observed_at": now.isoformat(),
+        "credits_used": snapshot.credits_used,
+        "credits_left": snapshot.credits_left,
+    }
+
+    temporary = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            dir=path.parent,
+            prefix=".credits_",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(payload, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        os.replace(temporary, path)
+
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+    return path
+
+
+def load_credit_state(
+    *,
+    path=DEFAULT_PATH,
+    now=None,
+    max_age_seconds=300,
+):
+    if type(max_age_seconds) is not int or max_age_seconds < 0:
+        raise ValueError("Invalid max_age_seconds")
+
+    path = Path(path)
+
+    if not path.exists():
+        return None
+
+    try:
+        payload = json.loads(path.read_text())
+
+        if type(payload) is not dict or payload.get("version") != 1:
+            raise ValueError("Invalid state version")
+
+        observed_at = datetime.fromisoformat(
+            payload["observed_at"]
+        )
+        observed_at = _utc(observed_at)
+
+        now = _utc(now or datetime.now(timezone.utc))
+        age = (now - observed_at).total_seconds()
+
+        if age < 0 or age > max_age_seconds:
+            return None
+
+        used = payload["credits_used"]
+        left = payload["credits_left"]
+
+        for value in (used, left):
+            if value is not None and (
+                type(value) is not int or value < 0
+            ):
+                raise ValueError("Invalid credit value")
+
+        return CreditSnapshot(
+            credits_used=used,
+            credits_left=left,
+            low_credits=left is not None and left < 20,
+            information_available=used is not None or left is not None,
+        )
+
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise ValueError("Invalid provider credit state") from exc
+=== Credit response handler ===
+"""Conservative provider-credit snapshot refresh.
+
+Coordinates snapshot writes with authorization using the same file lock.
+Does not execute HTTP requests or trading operations.
+"""
+
+import fcntl
+import json
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+from market_data.api_credit_monitor import parse_credit_headers
+from market_data.provider_credit_state import (
+    DEFAULT_PATH,
+    save_credit_state,
+)
+
+
+@dataclass(frozen=True)
+class CreditRefreshResult:
+    updated: bool
+    credits_left: int | None
+    reason: str
+
+
+def refresh_credits_from_response(
+    response,
+    *,
+    path=DEFAULT_PATH,
+    now=None,
+) -> CreditRefreshResult:
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    if now.tzinfo is None:
+        raise ValueError("Timezone-aware datetime required")
+
+    now = now.astimezone(timezone.utc)
+
+    headers = getattr(response, "headers", None)
+
+    if headers is None:
+        return CreditRefreshResult(
+            updated=False,
+            credits_left=None,
+            reason="Response headers unavailable",
+        )
+
+    try:
+        snapshot = parse_credit_headers(headers)
+    except (TypeError, AttributeError):
+        return CreditRefreshResult(
+            updated=False,
+            credits_left=None,
+            reason="Invalid response headers",
+        )
+
+    if snapshot.credits_left is None:
+        return CreditRefreshResult(
+            updated=False,
+            credits_left=None,
+            reason="Provider remaining credits unavailable",
+        )
+
+    provider_path = Path(path)
+    provider_path.parent.mkdir(parents=True, exist_ok=True)
+
+    lock_path = provider_path.with_name(
+        provider_path.name + ".lock"
+    )
+
+    with open(lock_path, "a+b") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+
+        try:
+            if provider_path.exists():
+                try:
+                    current = json.loads(provider_path.read_text())
+                    if (
+                        type(current) is not dict
+                        or current.get("version") != 1
+                    ):
+                        raise ValueError("Invalid provider state")
+
+                    observed_at = datetime.fromisoformat(
+                        current["observed_at"]
+                    ).astimezone(timezone.utc)
+
+                    existing_left = current["credits_left"]
+
+                    if (
+                        type(existing_left) is not int
+                        or existing_left < 0
+                    ):
+                        raise ValueError("Invalid credits_left")
+
+                except (OSError, ValueError, TypeError, KeyError) as exc:
+                    raise ValueError(
+                        "Invalid existing provider credit state"
+                    ) from exc
+
+                if now < observed_at:
+                    return CreditRefreshResult(
+                        updated=False,
+                        credits_left=existing_left,
+                        reason="Older observation rejected",
+                    )
+
+                if (
+                    now == observed_at
+                    and snapshot.credits_left > existing_left
+                ):
+                    return CreditRefreshResult(
+                        updated=False,
+                        credits_left=existing_left,
+                        reason="Equal-time credit increase rejected",
+                    )
+
+            save_credit_state(
+                snapshot,
+                path=provider_path,
+                now=now,
+            )
+
+            return CreditRefreshResult(
+                updated=True,
+                credits_left=snapshot.credits_left,
+                reason="Provider credit snapshot updated",
+            )
+
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+=== Pre-request credit gate ===
+"""Pre-request provider credit gate. No network calls."""
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+from market_data.provider_credit_guard import (
+    check_provider_credits,
+    ProviderCreditStatusUnknown,
+)
+from market_data.provider_credit_state import (
+    DEFAULT_PATH,
+    load_credit_state,
+)
+
+
+@dataclass(frozen=True)
+class PreRequestDecision:
+    allowed: bool
+    remaining_credits: int
+    required_credits: int
+    reserve_credits: int
+
+
+def check_before_request(
+    *,
+    path=DEFAULT_PATH,
+    now=None,
+    required_credits=1,
+    reserve_credits=20,
+    max_age_seconds=300,
+) -> PreRequestDecision:
+    """Reject requests when provider credit status is unknown or insufficient."""
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    snapshot = load_credit_state(
+        path=path,
+        now=now,
+        max_age_seconds=max_age_seconds,
+    )
+
+    if snapshot is None:
+        raise ProviderCreditStatusUnknown(
+            "Provider credit snapshot missing or expired"
+        )
+
+    result = check_provider_credits(
+        snapshot,
+        required_credits=required_credits,
+        reserve_credits=reserve_credits,
+        allow_unknown=False,
+    )
+
+    return PreRequestDecision(
+        allowed=result.allowed,
+        remaining_credits=result.remaining,
+        required_credits=required_credits,
+        reserve_credits=reserve_credits,
+    )

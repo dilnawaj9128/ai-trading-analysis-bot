@@ -58,7 +58,9 @@ def test_invalid_candle_marks_reservation_uncertain():
         )
 
         authorize.return_value = SimpleNamespace(
-            request_id="invalid-candle-request"
+            authorized=True,
+            local_budget_reserved=True,
+            request_id="invalid-candle-request",
         )
 
         transport.return_value = (

@@ -1,3 +1,4 @@
+from market_data.basic8_credit_policy import PROVIDER_RESERVE_CREDITS
 """Provider credit bootstrap policy.
 
 Decision-only module. No HTTP calls or local budget reservations.
@@ -62,6 +63,7 @@ def decide_credit_bootstrap(
             path=path,
             now=now,
             max_age_seconds=max_age_seconds,
+            reserve_credits=PROVIDER_RESERVE_CREDITS,
         )
     except ProviderCreditLimitReached:
         return BootstrapDecision(

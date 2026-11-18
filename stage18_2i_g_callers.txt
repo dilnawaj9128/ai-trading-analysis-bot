@@ -1,0 +1,38 @@
+=== Lifecycle claim callers ===
+./market_data/credit_refresh_store.py:110:def claim_refresh_attempt(
+./market_data/credit_refresh_store.py:177:def transition_refresh_attempt(
+./market_data/credit_refresh_coordinator.py:11:    claim_refresh_attempt,
+./market_data/credit_refresh_coordinator.py:19:def prepare_offline_refresh(
+./market_data/credit_refresh_coordinator.py:63:    lifecycle = claim_refresh_attempt(
+./tests/test_credit_refresh_coordinator.py:9:    prepare_offline_refresh,
+./tests/test_credit_refresh_coordinator.py:19:        prepare_offline_refresh(
+./tests/test_credit_refresh_coordinator.py:38:    result = prepare_offline_refresh(
+./tests/test_credit_refresh_coordinator.py:60:        prepare_offline_refresh(
+./tests/test_credit_refresh_coordinator.py:73:        prepare_offline_refresh(
+./tests/test_credit_refresh_coordinator.py:99:    prepare_offline_refresh(**kwargs)
+./tests/test_credit_refresh_coordinator.py:102:        prepare_offline_refresh(**kwargs)
+./tests/test_credit_refresh_safety_gaps.py:11:    prepare_offline_refresh,
+./tests/test_credit_refresh_safety_gaps.py:14:    claim_refresh_attempt,
+./tests/test_credit_refresh_safety_gaps.py:15:    transition_refresh_attempt,
+./tests/test_credit_refresh_safety_gaps.py:23:    attempt = claim_refresh_attempt(path=path, now=NOW)
+./tests/test_credit_refresh_safety_gaps.py:26:        transition_refresh_attempt(
+./tests/test_credit_refresh_safety_gaps.py:45:        "market_data.credit_refresh_coordinator.claim_refresh_attempt",
+./tests/test_credit_refresh_safety_gaps.py:49:            prepare_offline_refresh(
+./tests/test_credit_refresh_safety_gaps.py:59:        prepare_offline_refresh(
+./tests/test_credit_refresh_safety_gaps.py:73:        claim_refresh_attempt(path=path, now=NOW)
+./tests/test_credit_refresh_store.py:8:    claim_refresh_attempt,
+./tests/test_credit_refresh_store.py:9:    transition_refresh_attempt,
+./tests/test_credit_refresh_store.py:17:    return claim_refresh_attempt(path=path, now=now)
+./tests/test_credit_refresh_store.py:45:    transition_refresh_attempt(
+
+=== Approval claim callers ===
+./market_data/credit_refresh_approval.py:21:def claim_credit_refresh_approval(
+./tests/test_credit_refresh_coordinator.py:6:    claim_credit_refresh_approval,
+./tests/test_credit_refresh_coordinator.py:31:    claim_credit_refresh_approval(
+./tests/test_credit_refresh_coordinator.py:52:    claim_credit_refresh_approval(
+./tests/test_credit_refresh_coordinator.py:85:    claim_credit_refresh_approval(
+./tests/test_credit_refresh_safety_gaps.py:8:    claim_credit_refresh_approval,
+./tests/test_credit_refresh_safety_gaps.py:37:    claim_credit_refresh_approval(
+./tests/test_credit_refresh_approval.py:7:    claim_credit_refresh_approval,
+./tests/test_credit_refresh_approval.py:14:    return claim_credit_refresh_approval(
+./tests/test_credit_refresh_approval.py:55:        claim_credit_refresh_approval(

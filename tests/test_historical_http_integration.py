@@ -65,9 +65,9 @@ def test_http_errors_are_rejected(config, status_code):
         run_fetch(config, response)
 
 
-def test_valid_http_response(config):
+def test_valid_http_response(config, mock_historical_authorization):
     response = Mock()
-    response.headers = {}
+    response.headers = {"api-credits-used": "1", "api-credits-left": "7"}
     response.raise_for_status.return_value = None
 
     response.json.return_value = {
@@ -100,7 +100,7 @@ def test_valid_http_response(config):
     assert result["analysis_only"] is True
     assert result["execution_enabled"] is False
 
-    reserve.assert_called_once()
+    mock_historical_authorization.assert_called_once()
     session.get.assert_called_once()
 
 
@@ -120,3 +120,32 @@ def test_provider_error_payload(config):
         match="Provider error",
     ):
         run_fetch(config, response)
+
+
+@pytest.fixture(autouse=True)
+def mock_historical_authorization():
+    """Simulate successful authorization; never touch real quota files."""
+    from types import SimpleNamespace
+
+    approval = SimpleNamespace(
+        authorized=True,
+        local_budget_reserved=True,
+        request_id="offline-authorized-request",
+    )
+
+    with (
+        patch(
+            "market_data.historical_collector.authorize_request",
+            return_value=approval,
+        ) as authorization,
+        patch(
+            "market_data.historical_collector.refresh_credits_from_response",
+            side_effect=lambda response, **kwargs: SimpleNamespace(
+                updated=response.headers.get("api-credits-left") is not None
+            ),
+        ),
+        patch(
+            "market_data.authorization_ledger.transition_authorization"
+        ),
+    ):
+        yield authorization

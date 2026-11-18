@@ -100,7 +100,7 @@ def test_guarded_request_refreshes_credits(tmp_path):
 def test_insufficient_credits_blocks_http(tmp_path):
     provider = tmp_path / "provider.json"
     budget = tmp_path / "budget.json"
-    make_state(provider, 10)
+    make_state(provider, 1)
 
     session = Mock()
 

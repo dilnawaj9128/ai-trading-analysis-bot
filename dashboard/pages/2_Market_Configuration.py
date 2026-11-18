@@ -4,6 +4,7 @@
 import json
 
 import streamlit as st
+from dashboard.modern_theme import apply_modern_theme  # STAGE 19 MODERN UI THEME
 
 from config.market_config import (
     MARKETS,
@@ -22,6 +23,7 @@ def main():
         layout="wide",
     )
 
+    apply_modern_theme()
     st.title("Multi-Market Research Configuration")
 
     st.warning(

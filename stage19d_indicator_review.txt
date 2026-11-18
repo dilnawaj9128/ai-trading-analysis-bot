@@ -1,0 +1,564 @@
+========== indicators/__init__.py ==========
+"""Technical indicator API for the AI market analysis bot."""
+from .atr import calculate_atr
+from .ema import calculate_ema
+from .macd import calculate_macd
+from .rsi import calculate_rsi
+from .support_resistance import calculate_support_resistance
+from .volatility import calculate_volatility
+
+
+def calculate_indicators(df):
+    """Return a copy of completed OHLC candles enriched with indicators.
+
+    The caller must pass only validated, completed candles. Support/resistance
+    is shifted by one candle so the current candle cannot leak into its levels.
+    """
+    from ._utils import validate_ohlc
+
+    data = validate_ohlc(df)
+    data["RSI_14"] = calculate_rsi(data["Close"], 14)
+    data["EMA_20"] = calculate_ema(data["Close"], 20)
+    data["EMA_50"] = calculate_ema(data["Close"], 50)
+    macd = calculate_macd(data["Close"], 12, 26, 9)
+    data = data.join(macd)
+    data["ATR_14"] = calculate_atr(data, 14)
+    data["Volatility_20_pct"] = calculate_volatility(data["Close"], 20)
+    data = data.join(calculate_support_resistance(data, 20))
+    return data
+
+
+__all__ = [
+    "calculate_atr", "calculate_ema", "calculate_macd", "calculate_rsi",
+    "calculate_support_resistance", "calculate_volatility", "calculate_indicators",
+]
+========== patterns/candlestick.py ==========
+
+"""Rule-based candlestick pattern detection."""
+
+import numpy as np
+import pandas as pd
+
+REQUIRED_COLUMNS = {"Open", "High", "Low", "Close"}
+
+
+def validate_ohlc(data):
+    missing = REQUIRED_COLUMNS - set(data.columns)
+
+    if missing:
+        raise ValueError(
+            f"Missing required OHLC columns: {sorted(missing)}"
+        )
+
+    if data.empty:
+        raise ValueError("OHLC data cannot be empty")
+
+    values = data[["Open", "High", "Low", "Close"]].apply(
+        pd.to_numeric, errors="coerce"
+    )
+
+    if not np.isfinite(values.to_numpy(dtype=float)).all():
+        raise ValueError("OHLC values must be finite numbers")
+
+    invalid = (
+        (values["High"] < values[["Open", "Close", "Low"]].max(axis=1))
+        | (values["Low"] > values[["Open", "Close", "High"]].min(axis=1))
+    )
+
+    if invalid.any():
+        raise ValueError("Invalid OHLC candle range detected")
+
+    return values
+
+
+def detect_candlestick_patterns(data):
+    """
+    Detect nine common candlestick patterns.
+
+    Input must contain completed candles.
+    Returns a copy with pattern information.
+    """
+
+    values = validate_ohlc(data)
+    result = data.copy()
+
+    for column in REQUIRED_COLUMNS:
+        result[column] = values[column]
+
+    body = (values["Close"] - values["Open"]).abs()
+
+    candle_range = (
+        values["High"] - values["Low"]
+    ).replace(0, np.nan)
+
+    upper_shadow = (
+        values["High"] -
+        values[["Open", "Close"]].max(axis=1)
+    )
+
+    lower_shadow = (
+        values[["Open", "Close"]].min(axis=1) -
+        values["Low"]
+    )
+
+    body_ratio = body / candle_range
+
+    bullish = values["Close"] > values["Open"]
+    bearish = values["Close"] < values["Open"]
+
+    detected = [[] for _ in range(len(values))]
+
+    def add(i, name, direction, description):
+        detected[i].append(
+            (name, direction, description)
+        )
+
+    # 1. Doji
+    for i in range(len(values)):
+
+        if (
+            pd.notna(body_ratio.iloc[i])
+            and body_ratio.iloc[i] <= 0.10
+        ):
+            add(
+                i,
+                "Doji",
+                "NEUTRAL",
+                "Very small real body compared with candle range."
+            )
+
+    # 2. Hammer
+    for i in range(len(values)):
+
+        if (
+            body.iloc[i] > 0
+            and body_ratio.iloc[i] <= 0.35
+            and lower_shadow.iloc[i] >= 2 * body.iloc[i]
+            and upper_shadow.iloc[i] <= max(
+                body.iloc[i] * 0.5,
+                candle_range.iloc[i] * 0.10
+            )
+        ):
+            add(
+                i,
+                "Hammer",
+                "BULLISH",
+                "Small body with a long lower shadow."
+            )
+
+    # 3. Shooting Star
+    for i in range(len(values)):
+
+        if (
+            body.iloc[i] > 0
+            and body_ratio.iloc[i] <= 0.35
+            and upper_shadow.iloc[i] >= 2 * body.iloc[i]
+            and lower_shadow.iloc[i] <= max(
+                body.iloc[i] * 0.5,
+                candle_range.iloc[i] * 0.10
+            )
+        ):
+            add(
+                i,
+                "Shooting Star",
+                "BEARISH",
+                "Small body with a long upper shadow."
+            )
+
+    # Two-candle patterns
+    for i in range(1, len(values)):
+
+        previous_open = values["Open"].iloc[i - 1]
+        previous_close = values["Close"].iloc[i - 1]
+
+        current_open = values["Open"].iloc[i]
+        current_close = values["Close"].iloc[i]
+
+        previous_body = body.iloc[i - 1]
+        current_body = body.iloc[i]
+
+        # 4. Bullish Engulfing
+        if (
+            bearish.iloc[i - 1]
+            and bullish.iloc[i]
+            and current_open <= previous_close
+            and current_close >= previous_open
+            and current_body > 0
+        ):
+            add(
+                i,
+                "Bullish Engulfing",
+                "BULLISH",
+                "Bullish body engulfs previous bearish body."
+            )
+
+        # 5. Bearish Engulfing
+        if (
+            bullish.iloc[i - 1]
+            and bearish.iloc[i]
+            and current_open >= previous_close
+            and current_close <= previous_open
+            and current_body > 0
+        ):
+            add(
+                i,
+                "Bearish Engulfing",
+                "BEARISH",
+                "Bearish body engulfs previous bullish body."
+            )
+
+        previous_low = min(previous_open, previous_close)
+        previous_high = max(previous_open, previous_close)
+
+        contained = (
+            current_open >= previous_low
+            and current_open <= previous_high
+            and current_close >= previous_low
+            and current_close <= previous_high
+            and current_body < previous_body
+        )
+
+        # 6. Bullish Harami
+        if (
+            contained
+            and bearish.iloc[i - 1]
+            and bullish.iloc[i]
+        ):
+            add(
+                i,
+                "Bullish Harami",
+                "BULLISH",
+                "Small bullish body inside previous bearish body."
+            )
+
+        # 7. Bearish Harami
+        if (
+            contained
+            and bullish.iloc[i - 1]
+            and bearish.iloc[i]
+        ):
+            add(
+                i,
+                "Bearish Harami",
+                "BEARISH",
+                "Small bearish body inside previous bullish body."
+            )
+
+    # Three-candle patterns
+    for i in range(2, len(values)):
+
+        first_midpoint = (
+            values["Open"].iloc[i - 2]
+            + values["Close"].iloc[i - 2]
+        ) / 2
+
+        middle_is_small = (
+            body.iloc[i - 1] <= body.iloc[i - 2] * 0.5
+        )
+
+        # 8. Morning Star
+        if (
+            bearish.iloc[i - 2]
+            and middle_is_small
+            and bullish.iloc[i]
+            and values["Close"].iloc[i] > first_midpoint
+            and body.iloc[i] > 0
+        ):
+            add(
+                i,
+                "Morning Star",
+                "BULLISH",
+                "Three-candle bullish reversal structure."
+            )
+
+        # 9. Evening Star
+        if (
+            bullish.iloc[i - 2]
+            and middle_is_small
+            and bearish.iloc[i]
+            and values["Close"].iloc[i] < first_midpoint
+            and body.iloc[i] > 0
+        ):
+            add(
+                i,
+                "Evening Star",
+                "BEARISH",
+                "Three-candle bearish reversal structure."
+            )
+
+    result["Pattern"] = [
+        "; ".join(item[0] for item in row) if row else "None"
+        for row in detected
+    ]
+
+    result["Pattern_Direction"] = [
+        "; ".join(dict.fromkeys(item[1] for item in row))
+        if row else "NONE"
+        for row in detected
+    ]
+
+    result["Pattern_Description"] = [
+        " ".join(item[2] for item in row)
+        if row else "No recognized pattern."
+        for row in detected
+    ]
+
+    return result
+
+========== analysis/live_engine.py ==========
+
+"""Research-only technical analysis of validated completed candles."""
+
+import pandas as pd
+
+from indicators import calculate_ema, calculate_indicators
+from patterns.candlestick import detect_candlestick_patterns
+
+
+def analyze_live_candles(frame: pd.DataFrame) -> dict:
+    """Analyze completed OHLC candles without placing trades."""
+
+    if not isinstance(frame, pd.DataFrame):
+        raise TypeError("Expected pandas DataFrame")
+
+    if len(frame) < 60:
+        raise ValueError(
+            "At least 60 completed candles are required"
+        )
+
+    # Existing validation and indicators are reused.
+    enriched = calculate_indicators(frame)
+
+    enriched["EMA_9"] = calculate_ema(
+        enriched["Close"], 9
+    )
+    enriched["EMA_21"] = calculate_ema(
+        enriched["Close"], 21
+    )
+
+    patterns = detect_candlestick_patterns(frame)
+
+    latest = enriched.iloc[-1]
+
+    ema9 = latest["EMA_9"]
+    ema21 = latest["EMA_21"]
+    rsi = latest["RSI_14"]
+
+    observations = []
+
+    if pd.notna(ema9) and pd.notna(ema21):
+        if ema9 > ema21:
+            observations.append(
+                "Short-term EMA 9 is above EMA 21"
+            )
+        elif ema9 < ema21:
+            observations.append(
+                "Short-term EMA 9 is below EMA 21"
+            )
+        else:
+            observations.append(
+                "EMA 9 and EMA 21 are equal"
+            )
+
+    if pd.notna(rsi):
+        if rsi > 70:
+            observations.append(
+                "RSI is above 70 (high momentum reading)"
+            )
+        elif rsi < 30:
+            observations.append(
+                "RSI is below 30 (low momentum reading)"
+            )
+        else:
+            observations.append(
+                "RSI is between 30 and 70"
+            )
+
+    return {
+        "frame": enriched,
+        "patterns": patterns,
+        "observations": observations,
+        "latest": latest.to_dict(),
+        "analysis_only": True,
+        "execution_enabled": False,
+        "directional_backtesting_allowed": False,
+    }
+
+========== analysis/smart_market.py ==========
+"""Research-only market condition classification from completed candles."""
+from __future__ import annotations
+
+import math
+
+
+def _number(value):
+    try:
+        x = float(value)
+    except (TypeError, ValueError):
+        return None
+    return x if math.isfinite(x) else None
+
+
+def assess_market(analysis: dict, *, stale: bool = False, gaps: int = 0) -> dict:
+    """Describe indicator agreement; never generate a trade signal."""
+    base = {
+        "condition": "DATA UNAVAILABLE",
+        "explanation": "Market assessment unavailable.",
+        "ema_view": "Unavailable",
+        "rsi_view": "Unavailable",
+        "macd_view": "Unavailable",
+        "agreement": 0,
+        "analysis_only": True,
+        "execution_enabled": False,
+        "directional_backtesting_allowed": False,
+    }
+    if stale or gaps:
+        base["explanation"] = "Stale candles or timestamp gaps detected; assessment blocked."
+        return base
+    latest = analysis.get("latest", {})
+    if not isinstance(latest, dict):
+        return base
+    ema9 = _number(latest.get("EMA_9"))
+    ema21 = _number(latest.get("EMA_21"))
+    rsi = _number(latest.get("RSI_14"))
+    if any(x is None for x in (ema9, ema21, rsi)) or not 0 <= rsi <= 100:
+        base["explanation"] = "Required indicators are missing or invalid."
+        return base
+
+    # MACD column names depend on the existing indicator implementation.
+    macd_keys = [k for k in latest if k.upper() == "MACD"]
+    signal_keys = [k for k in latest if "SIGNAL" in k.upper() and "MACD" in k.upper()]
+    if not signal_keys:
+        signal_keys = [k for k in latest if k.upper() == "SIGNAL"]
+    macd = _number(latest[macd_keys[0]]) if macd_keys else None
+    signal = _number(latest[signal_keys[0]]) if signal_keys else None
+
+    ema_vote = 1 if ema9 > ema21 else (-1 if ema9 < ema21 else 0)
+    # RSI > 50 / < 50 reflects relative momentum, not a trade recommendation.
+    rsi_vote = 1 if rsi > 50 else (-1 if rsi < 50 else 0)
+    macd_vote = (1 if macd > signal else (-1 if macd < signal else 0)) if macd is not None and signal is not None else None
+
+    base["ema_view"] = "EMA 9 above EMA 21" if ema_vote > 0 else "EMA 9 below EMA 21" if ema_vote < 0 else "EMAs equal"
+    base["rsi_view"] = f"RSI {rsi:.1f} ({'above' if rsi > 50 else 'below' if rsi < 50 else 'at'} midpoint 50)"
+    base["macd_view"] = ("MACD above signal" if macd_vote > 0 else "MACD below signal" if macd_vote < 0 else "MACD equals signal") if macd_vote is not None else "MACD comparison unavailable"
+
+    votes = [ema_vote, rsi_vote] + ([macd_vote] if macd_vote is not None else [])
+    positive = sum(v == 1 for v in votes)
+    negative = sum(v == -1 for v in votes)
+    base["agreement"] = max(positive, negative)
+    if positive == len(votes) and len(votes) == 3:
+        base["condition"] = "BULLISH ALIGNMENT"
+        base["explanation"] = "EMA, RSI and MACD observations align upward; this does not predict the next candle."
+    elif negative == len(votes) and len(votes) == 3:
+        base["condition"] = "BEARISH ALIGNMENT"
+        base["explanation"] = "EMA, RSI and MACD observations align downward; this does not predict the next candle."
+    else:
+        base["condition"] = "MIXED / INCONCLUSIVE"
+        base["explanation"] = "Indicators are mixed or insufficient for a three-indicator agreement assessment."
+    return base
+========== strategy/trend_analysis.py ==========
+
+def analyze_trend(row):
+    """Classify market trend using price and EMA alignment."""
+
+    required = ["Close", "EMA_20", "EMA_50"]
+
+    for column in required:
+        value = row.get(column)
+
+        if value is None or not _is_finite(value):
+            return {
+                "trend": "UNKNOWN",
+                "reason": f"Missing or invalid {column} value."
+            }
+
+    close = float(row["Close"])
+    ema_20 = float(row["EMA_20"])
+    ema_50 = float(row["EMA_50"])
+
+    if close > ema_20 > ema_50:
+        return {
+            "trend": "BULLISH",
+            "reason": "Price is above EMA 20 and EMA 20 is above EMA 50."
+        }
+
+    if close < ema_20 < ema_50:
+        return {
+            "trend": "BEARISH",
+            "reason": "Price is below EMA 20 and EMA 20 is below EMA 50."
+        }
+
+    return {
+        "trend": "SIDEWAYS",
+        "reason": "Price and EMA alignment do not confirm a clear trend."
+    }
+
+
+def _is_finite(value):
+    try:
+        import math
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
+
+========== strategy/market_filter.py ==========
+
+import math
+
+
+def analyze_market_conditions(row):
+    required = [
+        "RSI_14",
+        "MACD_histogram",
+        "ATR_14",
+        "Close",
+    ]
+
+    for column in required:
+        try:
+            value = float(row[column])
+            if not math.isfinite(value):
+                raise ValueError
+        except (KeyError, TypeError, ValueError):
+            return {
+                "valid": False,
+                "momentum": "UNKNOWN",
+                "volatility": "UNKNOWN",
+                "atr_percent": None,
+                "reason": f"Missing or invalid {column}."
+            }
+
+    rsi = float(row["RSI_14"])
+    macd_hist = float(row["MACD_histogram"])
+    atr = float(row["ATR_14"])
+    close = float(row["Close"])
+
+    if close <= 0 or atr < 0 or not 0 <= rsi <= 100:
+        return {
+            "valid": False,
+            "momentum": "UNKNOWN",
+            "volatility": "UNKNOWN",
+            "atr_percent": None,
+            "reason": "Indicator values are outside valid ranges."
+        }
+
+    if rsi > 55 and macd_hist > 0:
+        momentum = "BULLISH"
+    elif rsi < 45 and macd_hist < 0:
+        momentum = "BEARISH"
+    else:
+        momentum = "NEUTRAL"
+
+    atr_percent = (atr / close) * 100
+
+    return {
+        "valid": True,
+        "momentum": momentum,
+        "volatility": "MEASURED",
+        "atr_percent": atr_percent,
+        "reason": (
+            f"RSI={rsi:.2f}; MACD histogram={macd_hist:.8f}; "
+            f"ATR={atr_percent:.5f}% of price."
+        )
+    }
+

@@ -1,0 +1,94 @@
+========== STAGE 19M FINAL DASHBOARD REVIEW ==========
+=== PYTHON COMPILATION ===
+Compilation exit code: 0
+=== FULL OFFLINE TEST SUITE ===
+........................................................................ [  9%]
+........................................................................ [ 19%]
+........................................................................ [ 29%]
+........................................................................ [ 39%]
+........................................................................ [ 49%]
+........................................................................ [ 59%]
+........................................................................ [ 69%]
+........................................................................ [ 79%]
+........................................................................ [ 89%]
+........................................................................ [ 99%]
+..                                                                       [100%]
+722 passed in 9.41s
+Pytest exit code: 0
+=== DASHBOARD PAGES ===
+dashboard/pages/1_Candlestick_Research.py
+dashboard/pages/2_Market_Configuration.py
+dashboard/pages/3_Live_Market_Monitor.py
+dashboard/pages/4_Auto_Live_Monitor.py
+dashboard/pages/5_Offline_Market_Analysis.py
+=== GIT WORKTREE STATUS ===
+ M dashboard/app.py
+ M dashboard/pages/1_Candlestick_Research.py
+ M dashboard/pages/3_Live_Market_Monitor.py
+ M dashboard/pages/4_Auto_Live_Monitor.py
+?? analysis/historical_audit_export.py
+?? analysis/historical_batch_report.py
+?? analysis/historical_observation.py
+?? analysis/historical_report_analytics.py
+?? analysis/historical_signal_audit.py
+?? analysis/historical_signal_comparison.py
+?? analysis/provenance_audit.py
+?? dashboard/historical_outcome_chart.py
+?? dashboard/offline_advanced.py
+?? dashboard/pages/5_Offline_Market_Analysis.py
+?? dashboard/signal_readiness.py
+?? market_data/authorized_live_fetch.py
+?? market_data/credit_dashboard_status.py
+?? market_data/credit_refresh_approval.py
+?? market_data/credit_refresh_coordinator.py
+?? market_data/credit_refresh_lifecycle.py
+?? market_data/credit_refresh_policy.py
+?? market_data/credit_refresh_store.py
+?? stage18_2i_c_authorization_review.txt
+?? stage18_2i_c_final_review.txt
+?? stage18_2i_e_test_review.txt
+?? stage18_2i_f_integration_review.txt
+?? stage18_2i_g_callers.txt
+?? stage18_2i_g_review.txt
+?? stage18_2i_h_review.txt
+?? stage18_api_safety_audit.txt
+?? stage18_authorization_contract.txt
+?? stage18_bootstrap_review.txt
+?? stage18_credit_probe_review.txt
+?? stage18_credit_refresh_review.txt
+?? stage18_credit_refresh_source.txt
+?? stage18_dashboard_audit.txt
+?? stage18_dashboard_integration.txt
+?? stage18_first_real_fetch_review.txt
+?? stage18_integration_review.txt
+?? stage18_integration_tests.txt
+?? stage18_live_patch_review.txt
+?? stage18_phase2a_review.txt
+?? stage18_real_api_readiness.txt
+?? stage19_dashboard_review.txt
+?? stage19_dashboard_source.txt
+?? stage19c_offline_review.txt
+?? stage19d_indicator_review.txt
+?? stage19m_final_review.txt
+?? tests/test_authorized_live_fetch.py
+?? tests/test_authorized_live_integration.py
+?? tests/test_credit_dashboard_status.py
+?? tests/test_credit_refresh_approval.py
+?? tests/test_credit_refresh_coordinator.py
+?? tests/test_credit_refresh_lifecycle.py
+?? tests/test_credit_refresh_policy.py
+?? tests/test_credit_refresh_safety_gaps.py
+?? tests/test_credit_refresh_stage18_h.py
+?? tests/test_credit_refresh_store.py
+?? tests/test_dashboard_signal_readiness.py
+?? tests/test_historical_audit_export.py
+?? tests/test_historical_batch_report.py
+?? tests/test_historical_observation.py
+?? tests/test_historical_outcome_chart.py
+?? tests/test_historical_report_analytics.py
+?? tests/test_historical_signal_audit.py
+?? tests/test_historical_signal_comparison.py
+?? tests/test_offline_advanced.py
+?? tests/test_provenance_audit.py
+=== STAGE 19L TEST FILE ===
+Present

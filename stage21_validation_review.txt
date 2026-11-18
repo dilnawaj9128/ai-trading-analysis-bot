@@ -1,0 +1,693 @@
+========== analysis/walk_forward.py ==========
+"""Research-only expanding-window walk-forward evaluation."""
+
+import numpy as np
+import pandas as pd
+
+from sklearn.dummy import DummyClassifier
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, brier_score_loss
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+
+from analysis.ml_trainer import FEATURES
+
+
+def evaluate_walk_forward(dataset, *, min_train=500, test_size=200, max_folds=10):
+    if not isinstance(dataset, pd.DataFrame):
+        raise ValueError("Expected DataFrame")
+
+    if any(type(v) is not int for v in (min_train, test_size, max_folds)):
+        raise ValueError("Window settings must be integers")
+
+    if min_train < 100 or test_size < 30 or max_folds < 1:
+        raise ValueError("Invalid window settings")
+
+    required = set(FEATURES) | {
+        "timestamp", "outcome_timestamp", "label_up_15m"
+    }
+    if not required.issubset(dataset.columns):
+        raise ValueError(f"Missing columns: {sorted(required - set(dataset.columns))}")
+
+    data = dataset.copy().reset_index(drop=True)
+    data["timestamp"] = pd.to_datetime(data["timestamp"], utc=True)
+    data["outcome_timestamp"] = pd.to_datetime(data["outcome_timestamp"], utc=True)
+
+    if data[["timestamp", "outcome_timestamp"]].isna().any().any():
+        raise ValueError("Invalid timestamps")
+
+    if data["timestamp"].duplicated().any():
+        raise ValueError("Duplicate timestamps")
+
+    if not data["timestamp"].is_monotonic_increasing:
+        raise ValueError("Timestamps must be sorted")
+
+    if not (
+        data["outcome_timestamp"] - data["timestamp"]
+    ).eq(pd.Timedelta(minutes=15)).all():
+        raise ValueError("Expected exact 15-minute outcomes")
+
+    y = data["label_up_15m"]
+    if y.isna().any() or not y.isin([0, 1]).all():
+        raise ValueError("Invalid labels")
+
+    x = data.loc[:, FEATURES].apply(pd.to_numeric, errors="raise")
+    if not np.isfinite(x.to_numpy(dtype=float)).all():
+        raise ValueError("Invalid feature values")
+
+    if len(data) < min_train + test_size + 16:
+        raise ValueError("Insufficient training data")
+
+    models = {
+        "Majority baseline": lambda: DummyClassifier(strategy="prior"),
+        "Logistic Regression": lambda: make_pipeline(
+            StandardScaler(),
+            LogisticRegression(max_iter=1000, random_state=42),
+        ),
+        "Random Forest": lambda: RandomForestClassifier(
+            n_estimators=150,
+            max_depth=6,
+            min_samples_leaf=10,
+            random_state=42,
+            n_jobs=1,
+        ),
+        "Gradient Boosting": lambda: GradientBoostingClassifier(
+            n_estimators=100,
+            max_depth=2,
+            learning_rate=0.05,
+            random_state=42,
+        ),
+    }
+
+    results = []
+    fold = 0
+
+    for cut in range(min_train + 16, len(data) - test_size + 1, test_size):
+        if fold >= max_folds:
+            break
+
+        first_test = data["timestamp"].iloc[cut]
+
+        train_idx = np.flatnonzero(
+            (
+                (data.index < cut)
+                & (data["outcome_timestamp"] < first_test)
+            ).to_numpy()
+        )
+        test_idx = np.arange(cut, cut + test_size)
+
+        if len(train_idx) < min_train:
+            continue
+
+        if y.iloc[train_idx].nunique() < 2:
+            continue
+
+        fold += 1
+
+        for name, factory in models.items():
+            model = factory()
+            model.fit(x.iloc[train_idx], y.iloc[train_idx].astype(int))
+
+            up_index = list(model.classes_).index(1)
+            probabilities = model.predict_proba(x.iloc[test_idx])[:, up_index]
+            predictions = (probabilities >= 0.5).astype(int)
+            actual = y.iloc[test_idx].astype(int)
+
+            results.append({
+                "fold": fold,
+                "model": name,
+                "train_rows": len(train_idx),
+                "test_rows": len(test_idx),
+                "test_start": first_test.isoformat(),
+                "accuracy": float(accuracy_score(actual, predictions)),
+                "balanced_accuracy": float(
+                    balanced_accuracy_score(actual, predictions)
+                ),
+                "brier_score": float(
+                    brier_score_loss(actual, probabilities)
+                ),
+            })
+
+    if not results:
+        raise ValueError("No valid folds")
+
+    details = pd.DataFrame(results)
+
+    summary = (
+        details.groupby("model", as_index=False)
+        .agg(
+            folds=("fold", "nunique"),
+            mean_accuracy=("accuracy", "mean"),
+            mean_balanced_accuracy=("balanced_accuracy", "mean"),
+            mean_brier=("brier_score", "mean"),
+        )
+        .sort_values("mean_brier")
+        .reset_index(drop=True)
+    )
+
+    return {
+        "summary": summary,
+        "folds": details,
+        "analysis_only": True,
+        "execution_enabled": False,
+    }
+========== analysis/training_dataset.py ==========
+"""Research-only 15-minute ML training dataset builder."""
+
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+from indicators import calculate_ema, calculate_indicators
+
+HORIZON = 15
+REQUIRED = ("timestamp", "Open", "High", "Low", "Close")
+
+
+def validate_1m_frame(frame):
+    if not isinstance(frame, pd.DataFrame):
+        raise ValueError("Expected pandas DataFrame")
+
+    if frame.empty or not set(REQUIRED).issubset(frame.columns):
+        raise ValueError("Missing OHLC data")
+
+    data = frame.loc[:, list(REQUIRED)].copy()
+
+    data["timestamp"] = pd.to_datetime(
+        data["timestamp"], utc=True, errors="raise"
+    )
+
+    if (
+        data["timestamp"].isna().any()
+        or data["timestamp"].duplicated().any()
+    ):
+        raise ValueError("Invalid or duplicate timestamps")
+
+    data = data.sort_values("timestamp").reset_index(drop=True)
+
+    if (
+        data["timestamp"].dt.second.ne(0).any()
+        or data["timestamp"].dt.microsecond.ne(0).any()
+    ):
+        raise ValueError("Misaligned timestamps")
+
+    for col in REQUIRED[1:]:
+        data[col] = pd.to_numeric(data[col], errors="raise")
+
+    prices = data[list(REQUIRED[1:])]
+
+    if not np.isfinite(prices.to_numpy(dtype=float)).all():
+        raise ValueError("Non-finite prices")
+
+    if (prices <= 0).any().any():
+        raise ValueError("Non-positive prices")
+
+    if (
+        (data["High"] < data[["Open", "Close", "Low"]].max(axis=1))
+        | (data["Low"] > data[["Open", "Close", "High"]].min(axis=1))
+    ).any():
+        raise ValueError("Invalid OHLC relationships")
+
+    return data
+
+
+def build_training_dataset(frame, *, horizon_minutes=15):
+    if type(horizon_minutes) is not int or horizon_minutes != 15:
+        raise ValueError("Only 15-minute horizon supported")
+
+    data = validate_1m_frame(frame)
+
+    if len(data) < 75:
+        raise ValueError("At least 75 candles required")
+
+    # Indicators use historical/current candles only.
+    enriched = calculate_indicators(data.copy())
+
+    enriched["EMA_9"] = calculate_ema(enriched["Close"], 9)
+    enriched["EMA_21"] = calculate_ema(enriched["Close"], 21)
+
+    enriched["return_1m"] = enriched["Close"].pct_change()
+    enriched["return_5m"] = enriched["Close"].pct_change(5)
+
+    enriched["range_pct"] = (
+        enriched["High"] - enriched["Low"]
+    ) / enriched["Close"]
+
+    enriched["ema_gap_pct"] = (
+        enriched["EMA_9"] - enriched["EMA_21"]
+    ) / enriched["Close"]
+
+    enriched["volatility_10"] = (
+        enriched["return_1m"].rolling(10).std()
+    )
+
+    features = [
+        "EMA_9",
+        "EMA_21",
+        "RSI_14",
+        "return_1m",
+        "return_5m",
+        "range_pct",
+        "ema_gap_pct",
+        "volatility_10",
+    ]
+
+    for col in ("MACD", "MACD_Signal", "ATR_14"):
+        if col in enriched.columns:
+            features.append(col)
+
+    step = pd.Timedelta(minutes=1)
+
+    # All 15 consecutive intervals must exist.
+    contiguous = enriched["timestamp"].diff().eq(step)
+
+    valid_window = (
+        contiguous.rolling(15, min_periods=15)
+        .sum()
+        .shift(-15)
+        .eq(15)
+    )
+
+    future_close = enriched["Close"].shift(-15)
+    future_timestamp = enriched["timestamp"].shift(-15)
+
+    future_return = (
+        future_close / enriched["Close"] - 1
+    )
+
+    valid_window = valid_window & (
+        future_timestamp - enriched["timestamp"]
+    ).eq(pd.Timedelta(minutes=15))
+
+    result = enriched[["timestamp", *features]].copy()
+
+    result["outcome_timestamp"] = future_timestamp
+    result["future_return_15m"] = future_return
+
+    result["label_up_15m"] = (
+        future_return > 0
+    ).astype("int64")
+
+    result = result.loc[valid_window]
+    result = result.replace([np.inf, -np.inf], np.nan)
+
+    result = result.dropna(
+        subset=[*features, "future_return_15m"]
+    )
+
+    return result.reset_index(drop=True)
+
+
+def save_training_dataset(dataset, path):
+    path = Path(path)
+
+    if path.exists():
+        raise FileExistsError(path)
+
+    if not isinstance(dataset, pd.DataFrame) or dataset.empty:
+        raise ValueError("Non-empty dataset required")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    dataset.to_csv(path, index=False, mode="x")
+
+    return path
+========== analysis/outcome_tracker.py ==========
+"""Research-only 15-minute historical close-to-close observations.
+
+Timestamps are candle OPEN timestamps; compare exact 15-minute offsets
+within a continuous, validated one-minute OHLC sequence.
+"""
+import math
+import sqlite3
+from pathlib import Path
+
+import pandas as pd
+
+from analysis.history_recorder import DB_PATH
+
+HORIZON = pd.Timedelta(minutes=15)
+
+
+def _prepare(frame):
+    required = {'timestamp', 'Open', 'High', 'Low', 'Close'}
+    if not isinstance(frame, pd.DataFrame) or not required.issubset(frame.columns):
+        raise ValueError('Validated OHLC DataFrame required')
+    data = frame.copy()
+    data['timestamp'] = pd.to_datetime(data['timestamp'], utc=True, errors='raise')
+    if data['timestamp'].isna().any() or data['timestamp'].duplicated().any():
+        raise ValueError('Invalid or duplicate candle timestamps')
+    data = data.sort_values('timestamp').reset_index(drop=True)
+    if not data.empty:
+        if (data['timestamp'].dt.second != 0).any() or (data['timestamp'].dt.microsecond != 0).any():
+            raise ValueError('Candle timestamps must align to minutes')
+    for col in ('Open', 'High', 'Low', 'Close'):
+        data[col] = pd.to_numeric(data[col], errors='raise')
+        if not data[col].map(math.isfinite).all():
+            raise ValueError('Non-finite OHLC')
+    if (data[['Open', 'High', 'Low', 'Close']] <= 0).any().any():
+        raise ValueError('OHLC prices must be positive')
+    if ((data['High'] < data[['Open', 'Close', 'Low']].max(axis=1)) | (data['Low'] > data[['Open', 'Close', 'High']].min(axis=1))).any():
+        raise ValueError('Invalid OHLC range')
+    return data
+
+
+def calculate_15m_observations(frame):
+    """Return outcomes only for contiguous 16-candle windows (1min data)."""
+    data = _prepare(frame)
+    results = []
+    for i in range(max(0, len(data) - 15)):
+        window = data.iloc[i:i + 16]
+        if not window['timestamp'].diff().iloc[1:].eq(pd.Timedelta(minutes=1)).all():
+            continue
+        start = window.iloc[0]
+        end = window.iloc[-1]
+        start_price, end_price = float(start['Close']), float(end['Close'])
+        results.append({
+            'candle_timestamp': start['timestamp'].isoformat(),
+            'outcome_timestamp': end['timestamp'].isoformat(),
+            'start_close': start_price,
+            'end_close': end_price,
+            'return_pct': (end_price / start_price - 1) * 100,
+        })
+    return results
+
+
+def update_15m_outcomes(frame, *, symbol, timeframe, db_path=DB_PATH):
+    """Update existing history rows; never create records or fetch data.
+
+    Requires 1min candles. Existing history timestamps must match the
+    canonical UTC ISO format emitted by pandas.Timestamp.isoformat().
+    """
+    if timeframe != '1min':
+        raise ValueError('15-minute outcome tracker currently requires 1min candles')
+    observations = calculate_15m_observations(frame)
+    path = Path(db_path)
+    if not path.exists():
+        return 0
+    with sqlite3.connect(path) as conn:
+        cols = {row[1] for row in conn.execute('PRAGMA table_info(analysis_history)')}
+        if not {'candle_timestamp', 'symbol', 'timeframe'}.issubset(cols):
+            raise ValueError('Stage 7.7 history schema required')
+        for name, dtype in (
+            ('outcome_timestamp', 'TEXT'),
+            ('outcome_close', 'REAL'),
+            ('outcome_return_pct', 'REAL'),
+        ):
+            if name not in cols:
+                conn.execute(f'ALTER TABLE analysis_history ADD COLUMN {name} {dtype}')
+        changed = 0
+        for item in observations:
+            # Match by parsed timestamps rather than text formatting variants.
+            rows = conn.execute('''SELECT id, candle_timestamp FROM analysis_history
+                                   WHERE symbol=? AND timeframe=? AND candle_timestamp IS NOT NULL
+                                     AND outcome_timestamp IS NULL''', (symbol, timeframe)).fetchall()
+            for row_id, raw_ts in rows:
+                try:
+                    stored = pd.Timestamp(raw_ts)
+                    if stored.tzinfo is None:
+                        continue
+                    matches = stored.tz_convert('UTC') == pd.Timestamp(item['candle_timestamp'])
+                except (ValueError, TypeError):
+                    continue
+                if matches:
+                    conn.execute('''UPDATE analysis_history
+                        SET outcome_timestamp=?, outcome_close=?, outcome_return_pct=?
+                        WHERE id=? AND outcome_timestamp IS NULL''',
+                        (item['outcome_timestamp'], item['end_close'], item['return_pct'], row_id))
+                    changed += 1
+        return changed
+========== analysis/historical_signal_comparison.py ==========
+"""Offline historical strategy evaluation with strict provenance gates."""
+
+import pandas as pd
+
+from indicators import calculate_indicators
+from patterns.candlestick import detect_candlestick_patterns
+from strategy.signal_engine import generate_signal
+from analysis.historical_observation import (
+    evaluate_historical_window,
+)
+
+
+def compare_directions(signal, outcome):
+    if signal == "NO TRADE":
+        return "NOT_EVALUATED"
+
+    if signal not in ("UP", "DOWN"):
+        raise ValueError("Unsupported strategy signal")
+
+    if outcome not in ("UP", "DOWN", "FLAT"):
+        raise ValueError("Unsupported historical outcome")
+
+    if outcome == "FLAT":
+        return "FLAT_OUTCOME"
+
+    return "MATCH" if signal == outcome else "MISMATCH"
+
+
+def evaluate_historical_signal(
+    frame: pd.DataFrame,
+    *,
+    selected_index: int,
+):
+    """Use only selected-and-earlier candles for signal generation."""
+
+    observation = evaluate_historical_window(
+        frame,
+        selected_index=selected_index,
+        expiry_minutes=15,
+    )
+
+    past = observation["indicator_input"].copy()
+
+    if len(past) < 60:
+        raise ValueError("At least 60 historical candles required")
+
+    enriched = calculate_indicators(past)
+    patterns = detect_candlestick_patterns(past)
+
+    enriched["Pattern_Direction"] = (
+        patterns["Pattern_Direction"].to_numpy()
+    )
+
+    # Fail closed: offline dataset feed provenance is not verified.
+    signal_result = generate_signal(
+        enriched,
+        expiry_minutes=15,
+        data_mode="unknown",
+        data_quality_status="INVALID",
+    )
+
+    signal = signal_result["signal"]
+    outcome = observation["historical_direction"]
+
+    return {
+        "observation_utc": observation["observation_close_utc"],
+        "evaluation_utc": observation["evaluation_close_utc"],
+        "signal": signal,
+        "historical_outcome": outcome,
+        "comparison": compare_directions(signal, outcome),
+        "reasons": signal_result["reasons"],
+        "expiry_minutes": 15,
+        "candles_used_for_signal": len(past),
+        "analysis_only": True,
+        "feed_verified": False,
+        "execution_enabled": False,
+        "prediction_accuracy_available": False,
+    }
+========== strategy/signal_engine.py ==========
+
+from strategy.trend_analysis import analyze_trend
+from strategy.market_filter import analyze_market_conditions
+
+
+def generate_signal(
+    data,
+    expiry_minutes=15,
+    data_mode="unknown",
+    data_quality_status="INVALID",
+):
+    """
+    Generate an explainable, analysis-only signal.
+
+    Directional analysis is allowed only when:
+    - Feed mode is explicitly live or delayed.
+    - Data quality status is VALID.
+    - At least 50 candles are available.
+
+    Expiry is informational, not a prediction or guarantee.
+    """
+
+    if expiry_minutes not in (1, 5, 15):
+        raise ValueError("expiry_minutes must be 1, 5, or 15.")
+
+    mode = str(data_mode).strip().lower()
+    quality_status = str(data_quality_status).strip().upper()
+
+    def no_trade(reason, trend="UNKNOWN", momentum="UNKNOWN",
+                 volatility="UNKNOWN", atr_percent=None):
+        return {
+            "signal": "NO TRADE",
+            "trend": trend,
+            "momentum": momentum,
+            "volatility": volatility,
+            "atr_percent": atr_percent,
+            "expiry_minutes": expiry_minutes,
+            "reasons": [reason],
+        }
+
+    # Safety gate 1: data quality
+    if quality_status != "VALID":
+        return no_trade(
+            f"Data quality is {quality_status}; directional analysis blocked."
+        )
+
+    # Safety gate 2: verified feed mode
+    if mode not in {"live", "delayed"}:
+        return no_trade(
+            "Data feed mode is unknown or unsupported. "
+            "Verify the provider's feed mode before directional analysis."
+        )
+
+    # Safety gate 3: sufficient candles
+    if data is None or len(data) < 50:
+        return no_trade(
+            "At least 50 candles are required."
+        )
+
+    row = data.iloc[-1]
+
+    trend_result = analyze_trend(row)
+    market_result = analyze_market_conditions(row)
+
+    reasons = [
+        trend_result["reason"],
+        market_result["reason"],
+    ]
+
+    def filtered_no_trade(reason):
+        return {
+            "signal": "NO TRADE",
+            "trend": trend_result["trend"],
+            "momentum": market_result["momentum"],
+            "volatility": market_result["volatility"],
+            "atr_percent": market_result["atr_percent"],
+            "expiry_minutes": expiry_minutes,
+            "reasons": reasons + [reason],
+        }
+
+    if trend_result["trend"] == "UNKNOWN":
+        return filtered_no_trade(
+            "Trend could not be determined."
+        )
+
+    if not market_result["valid"]:
+        return filtered_no_trade(
+            market_result["reason"]
+        )
+
+    trend = trend_result["trend"]
+    momentum = market_result["momentum"]
+
+    if trend == "SIDEWAYS":
+        return filtered_no_trade(
+            "Sideways market: no clear trend."
+        )
+
+    if trend != momentum:
+        return filtered_no_trade(
+            "Trend and momentum are not aligned."
+        )
+
+    rsi = float(row["RSI_14"])
+
+    if trend == "BULLISH" and rsi >= 70:
+        return filtered_no_trade(
+            "RSI is in the overbought zone."
+        )
+
+    if trend == "BEARISH" and rsi <= 30:
+        return filtered_no_trade(
+            "RSI is in the oversold zone."
+        )
+
+    # Check conflicting candlestick patterns.
+    pattern_direction = str(
+        row.get("Pattern_Direction", "NONE")
+    ).upper()
+
+    directions = {
+        item.strip()
+        for item in pattern_direction.split(";")
+    }
+
+    if "BULLISH" in directions and "BEARISH" in directions:
+        return filtered_no_trade(
+            "Conflicting candlestick patterns detected."
+        )
+
+    if trend == "BULLISH" and "BEARISH" in directions:
+        return filtered_no_trade(
+            "Bearish candlestick pattern conflicts with trend."
+        )
+
+    if trend == "BEARISH" and "BULLISH" in directions:
+        return filtered_no_trade(
+            "Bullish candlestick pattern conflicts with trend."
+        )
+
+    # Avoid signals immediately next to opposing S/R levels.
+    atr = float(row["ATR_14"])
+    close = float(row["Close"])
+
+    for column in ("Support", "Resistance"):
+        try:
+            level = float(row[column])
+        except (KeyError, TypeError, ValueError):
+            level = None
+
+        if level is not None:
+            if trend == "BULLISH" and column == "Resistance":
+                if abs(level - close) <= 0.25 * atr:
+                    return filtered_no_trade(
+                        "Price is too close to resistance."
+                    )
+
+            if trend == "BEARISH" and column == "Support":
+                if abs(close - level) <= 0.25 * atr:
+                    return filtered_no_trade(
+                        "Price is too close to support."
+                    )
+
+    signal = "UP" if trend == "BULLISH" else "DOWN"
+
+    reasons.append(
+        "Trend, momentum and pattern checks are aligned."
+    )
+
+    if mode == "delayed":
+        reasons.append(
+            "WARNING: Analysis uses delayed market data."
+        )
+
+    reasons.append(
+        "This is an analysis result, not a guaranteed prediction."
+    )
+
+    return {
+        "signal": signal,
+        "trend": trend,
+        "momentum": momentum,
+        "volatility": market_result["volatility"],
+        "atr_percent": market_result["atr_percent"],
+        "expiry_minutes": expiry_minutes,
+        "reasons": reasons,
+    }
+
+========== EXISTING VALIDATION TESTS ==========
+tests/test_historical_outcome_chart.py
+tests/test_outcome_tracker.py
+tests/test_training_dataset.py

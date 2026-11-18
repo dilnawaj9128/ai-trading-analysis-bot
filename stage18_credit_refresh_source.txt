@@ -1,0 +1,657 @@
+========== market_data/provider_credit_state.py ==========
+"""Persistent provider credit state. No API calls."""
+
+import json
+import os
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+from market_data.api_credit_monitor import CreditSnapshot
+
+
+DEFAULT_PATH = Path("data/api_usage/provider_credits.json")
+
+
+def _utc(value):
+    if value.tzinfo is None:
+        raise ValueError("Timezone-aware datetime required")
+    return value.astimezone(timezone.utc)
+
+
+def save_credit_state(
+    snapshot: CreditSnapshot,
+    *,
+    path=DEFAULT_PATH,
+    now=None,
+):
+    if not isinstance(snapshot, CreditSnapshot):
+        raise ValueError("CreditSnapshot required")
+
+    if snapshot.credits_left is not None and (
+        type(snapshot.credits_left) is not int
+        or snapshot.credits_left < 0
+    ):
+        raise ValueError("Invalid credits_left")
+
+    if snapshot.credits_used is not None and (
+        type(snapshot.credits_used) is not int
+        or snapshot.credits_used < 0
+    ):
+        raise ValueError("Invalid credits_used")
+
+    now = _utc(now or datetime.now(timezone.utc))
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "version": 1,
+        "observed_at": now.isoformat(),
+        "credits_used": snapshot.credits_used,
+        "credits_left": snapshot.credits_left,
+    }
+
+    temporary = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            dir=path.parent,
+            prefix=".credits_",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(payload, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        os.replace(temporary, path)
+
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+    return path
+
+
+def load_credit_state(
+    *,
+    path=DEFAULT_PATH,
+    now=None,
+    max_age_seconds=300,
+):
+    if type(max_age_seconds) is not int or max_age_seconds < 0:
+        raise ValueError("Invalid max_age_seconds")
+
+    path = Path(path)
+
+    if not path.exists():
+        return None
+
+    try:
+        payload = json.loads(path.read_text())
+
+        if type(payload) is not dict or payload.get("version") != 1:
+            raise ValueError("Invalid state version")
+
+        observed_at = datetime.fromisoformat(
+            payload["observed_at"]
+        )
+        observed_at = _utc(observed_at)
+
+        now = _utc(now or datetime.now(timezone.utc))
+        age = (now - observed_at).total_seconds()
+
+        if age < 0 or age > max_age_seconds:
+            return None
+
+        used = payload["credits_used"]
+        left = payload["credits_left"]
+
+        for value in (used, left):
+            if value is not None and (
+                type(value) is not int or value < 0
+            ):
+                raise ValueError("Invalid credit value")
+
+        return CreditSnapshot(
+            credits_used=used,
+            credits_left=left,
+            low_credits=left is not None and left < 20,
+            information_available=used is not None or left is not None,
+        )
+
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise ValueError("Invalid provider credit state") from exc
+
+========== market_data/credit_bootstrap_policy.py ==========
+"""Provider credit bootstrap policy.
+
+Decision-only module. No HTTP calls or local budget reservations.
+"""
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+from market_data.provider_credit_guard import (
+    ProviderCreditLimitReached,
+    ProviderCreditStatusUnknown,
+)
+from market_data.provider_credit_state import (
+    DEFAULT_PATH,
+    load_credit_state,
+)
+from market_data.pre_request_credit_gate import check_before_request
+
+
+@dataclass(frozen=True)
+class BootstrapDecision:
+    action: str
+    reason: str
+    requires_explicit_approval: bool
+
+
+def decide_credit_bootstrap(
+    *,
+    path=DEFAULT_PATH,
+    now=None,
+    max_age_seconds=300,
+    bootstrap_approved=False,
+):
+    if type(bootstrap_approved) is not bool:
+        raise ValueError("Invalid bootstrap_approved")
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    snapshot = load_credit_state(
+        path=path,
+        now=now,
+        max_age_seconds=max_age_seconds,
+    )
+
+    if snapshot is None or snapshot.credits_left is None:
+        if bootstrap_approved:
+            return BootstrapDecision(
+                action="BOOTSTRAP",
+                reason="One explicitly approved bootstrap request may be attempted",
+                requires_explicit_approval=False,
+            )
+
+        return BootstrapDecision(
+            action="REQUIRE_APPROVAL",
+            reason="Provider credits unknown or expired",
+            requires_explicit_approval=True,
+        )
+
+    try:
+        check_before_request(
+            path=path,
+            now=now,
+            max_age_seconds=max_age_seconds,
+        )
+    except ProviderCreditLimitReached:
+        return BootstrapDecision(
+            action="BLOCK",
+            reason="Insufficient reported provider credits",
+            requires_explicit_approval=False,
+        )
+    except ProviderCreditStatusUnknown:
+        return BootstrapDecision(
+            action="REQUIRE_APPROVAL",
+            reason="Provider credit status unavailable",
+            requires_explicit_approval=True,
+        )
+
+    return BootstrapDecision(
+        action="NORMAL",
+        reason="Fresh provider credit snapshot permits normal requests",
+        requires_explicit_approval=False,
+    )
+
+========== market_data/bootstrap_request_coordinator.py ==========
+"""One-time bootstrap coordinator for research-only API requests."""
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+from market_data.bootstrap_authorization import (
+    claim_bootstrap_approval,
+)
+from market_data.credit_bootstrap_policy import (
+    decide_credit_bootstrap,
+)
+from market_data.credit_response_handler import (
+    refresh_credits_from_response,
+)
+from market_data.provider_credit_state import DEFAULT_PATH
+from market_data.twelve_data_client import (
+    STATE_PATH,
+    reserve_request,
+)
+
+
+class BootstrapNotPermitted(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class BootstrapResult:
+    request_executed: bool
+    credits_refreshed: bool
+    credits_left: int | None
+
+
+def execute_bootstrap(
+    *,
+    request_callback,
+    approval_id,
+    response_validator=None,
+    explicitly_approved=False,
+    approval_path="data/api_usage/bootstrap_claim.json",
+    provider_state_path=DEFAULT_PATH,
+    local_budget_path=STATE_PATH,
+    now=None,
+):
+    if not callable(request_callback):
+        raise ValueError("Callable request_callback required")
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    decision = decide_credit_bootstrap(
+        path=provider_state_path,
+        now=now,
+        bootstrap_approved=explicitly_approved,
+    )
+
+    if decision.action != "BOOTSTRAP":
+        raise BootstrapNotPermitted(
+            f"Bootstrap not permitted: {decision.action}"
+        )
+
+    # Claim approval before spending local budget or making HTTP calls.
+    claim_bootstrap_approval(
+        approval_id=approval_id,
+        explicitly_approved=explicitly_approved,
+        path=approval_path,
+        now=now,
+    )
+
+    # Local quota remains enforced for bootstrap requests.
+    reserve_request(
+        path=local_budget_path,
+        now=now,
+    )
+
+    response = request_callback()
+
+    # A callback must return a real HTTP-like response with a status.
+    # Never treat a missing status or HTTP error as success.
+    status = getattr(response, "status_code", None)
+
+    if type(status) is not int or not 200 <= status < 300:
+        raise BootstrapNotPermitted(
+            f"Bootstrap HTTP response not successful: {status}"
+        )
+
+    # Validate the response before updating provider credit state.
+    if response_validator is not None:
+        if not callable(response_validator):
+            raise ValueError("response_validator must be callable")
+        response_validator(response)
+
+    refresh = refresh_credits_from_response(
+        response,
+        path=provider_state_path,
+        now=now,
+    )
+
+    return BootstrapResult(
+        request_executed=True,
+        credits_refreshed=refresh.updated,
+        credits_left=refresh.credits_left,
+    )
+
+========== market_data/bootstrap_authorization.py ==========
+"""Persistent, one-time bootstrap approval claim.
+
+No HTTP requests, trading execution, or API budget reservations.
+"""
+
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+class BootstrapApprovalRequired(RuntimeError):
+    pass
+
+
+class BootstrapApprovalAlreadyUsed(RuntimeError):
+    pass
+
+
+def claim_bootstrap_approval(
+    *,
+    approval_id,
+    explicitly_approved=False,
+    path="data/api_usage/bootstrap_claim.json",
+    now=None,
+):
+    if not isinstance(approval_id, str) or not approval_id.strip():
+        raise ValueError("Non-empty approval_id required")
+
+    if type(explicitly_approved) is not bool:
+        raise ValueError("explicitly_approved must be boolean")
+
+    if not explicitly_approved:
+        raise BootstrapApprovalRequired(
+            "Explicit bootstrap approval required"
+        )
+
+    now = now if now is not None else datetime.now(timezone.utc)
+
+    if not isinstance(now, datetime) or now.tzinfo is None:
+        raise ValueError("Timezone-aware datetime required")
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "version": 1,
+        "approval_id": approval_id,
+        "claimed_at": now.astimezone(timezone.utc).isoformat(),
+        "status": "claimed",
+    }
+
+    # O_EXCL makes file creation atomic across processes.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+
+    try:
+        fd = os.open(path, flags, 0o600)
+    except FileExistsError as exc:
+        raise BootstrapApprovalAlreadyUsed(
+            "Bootstrap approval already claimed"
+        ) from exc
+
+    # Fail closed: if writing fails, retain the claim file.
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+    return payload
+
+========== market_data/pre_request_credit_gate.py ==========
+"""Pre-request provider credit gate. No network calls."""
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+from market_data.provider_credit_guard import (
+    check_provider_credits,
+    ProviderCreditStatusUnknown,
+)
+from market_data.provider_credit_state import (
+    DEFAULT_PATH,
+    load_credit_state,
+)
+
+
+@dataclass(frozen=True)
+class PreRequestDecision:
+    allowed: bool
+    remaining_credits: int
+    required_credits: int
+    reserve_credits: int
+
+
+def check_before_request(
+    *,
+    path=DEFAULT_PATH,
+    now=None,
+    required_credits=1,
+    reserve_credits=20,
+    max_age_seconds=300,
+) -> PreRequestDecision:
+    """Reject requests when provider credit status is unknown or insufficient."""
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    snapshot = load_credit_state(
+        path=path,
+        now=now,
+        max_age_seconds=max_age_seconds,
+    )
+
+    if snapshot is None:
+        raise ProviderCreditStatusUnknown(
+            "Provider credit snapshot missing or expired"
+        )
+
+    result = check_provider_credits(
+        snapshot,
+        required_credits=required_credits,
+        reserve_credits=reserve_credits,
+        allow_unknown=False,
+    )
+
+    return PreRequestDecision(
+        allowed=result.allowed,
+        remaining_credits=result.remaining,
+        required_credits=required_credits,
+        reserve_credits=reserve_credits,
+    )
+
+========== market_data/credit_response_handler.py ==========
+"""Conservative provider-credit snapshot refresh.
+
+Coordinates snapshot writes with authorization using the same file lock.
+Does not execute HTTP requests or trading operations.
+"""
+
+import fcntl
+import json
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+from market_data.api_credit_monitor import parse_credit_headers
+from market_data.provider_credit_state import (
+    DEFAULT_PATH,
+    save_credit_state,
+)
+
+
+@dataclass(frozen=True)
+class CreditRefreshResult:
+    updated: bool
+    credits_left: int | None
+    reason: str
+
+
+def refresh_credits_from_response(
+    response,
+    *,
+    path=DEFAULT_PATH,
+    now=None,
+) -> CreditRefreshResult:
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    if now.tzinfo is None:
+        raise ValueError("Timezone-aware datetime required")
+
+    now = now.astimezone(timezone.utc)
+
+    headers = getattr(response, "headers", None)
+
+    if headers is None:
+        return CreditRefreshResult(
+            updated=False,
+            credits_left=None,
+            reason="Response headers unavailable",
+        )
+
+    try:
+        snapshot = parse_credit_headers(headers)
+    except (TypeError, AttributeError):
+        return CreditRefreshResult(
+            updated=False,
+            credits_left=None,
+            reason="Invalid response headers",
+        )
+
+    if snapshot.credits_left is None:
+        return CreditRefreshResult(
+            updated=False,
+            credits_left=None,
+            reason="Provider remaining credits unavailable",
+        )
+
+    provider_path = Path(path)
+    provider_path.parent.mkdir(parents=True, exist_ok=True)
+
+    lock_path = provider_path.with_name(
+        provider_path.name + ".lock"
+    )
+
+    with open(lock_path, "a+b") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+
+        try:
+            if provider_path.exists():
+                try:
+                    current = json.loads(provider_path.read_text())
+                    if (
+                        type(current) is not dict
+                        or current.get("version") != 1
+                    ):
+                        raise ValueError("Invalid provider state")
+
+                    observed_at = datetime.fromisoformat(
+                        current["observed_at"]
+                    ).astimezone(timezone.utc)
+
+                    existing_left = current["credits_left"]
+
+                    if (
+                        type(existing_left) is not int
+                        or existing_left < 0
+                    ):
+                        raise ValueError("Invalid credits_left")
+
+                except (OSError, ValueError, TypeError, KeyError) as exc:
+                    raise ValueError(
+                        "Invalid existing provider credit state"
+                    ) from exc
+
+                if now < observed_at:
+                    return CreditRefreshResult(
+                        updated=False,
+                        credits_left=existing_left,
+                        reason="Older observation rejected",
+                    )
+
+                if (
+                    now == observed_at
+                    and snapshot.credits_left > existing_left
+                ):
+                    return CreditRefreshResult(
+                        updated=False,
+                        credits_left=existing_left,
+                        reason="Equal-time credit increase rejected",
+                    )
+
+            save_credit_state(
+                snapshot,
+                path=provider_path,
+                now=now,
+            )
+
+            return CreditRefreshResult(
+                updated=True,
+                credits_left=snapshot.credits_left,
+                reason="Provider credit snapshot updated",
+            )
+
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+========== market_data/provider_credit_guard.py ==========
+"""Provider credit guard for research-only data acquisition.
+
+No API calls are performed by this module.
+"""
+
+from dataclasses import dataclass
+
+from market_data.api_credit_monitor import CreditSnapshot
+
+
+class ProviderCreditLimitReached(Exception):
+    """Provider reports insufficient remaining credits."""
+
+
+class ProviderCreditStatusUnknown(Exception):
+    """Provider credit information is unavailable."""
+
+
+@dataclass(frozen=True)
+class CreditDecision:
+    allowed: bool
+    remaining: int | None
+    reason: str
+
+
+def check_provider_credits(
+    snapshot: CreditSnapshot,
+    *,
+    required_credits: int = 1,
+    reserve_credits: int = 20,
+    allow_unknown: bool = False,
+) -> CreditDecision:
+
+    if not isinstance(snapshot, CreditSnapshot):
+        raise ValueError("CreditSnapshot required")
+
+    if type(required_credits) is not int or required_credits < 1:
+        raise ValueError("Invalid required_credits")
+
+    if type(reserve_credits) is not int or reserve_credits < 0:
+        raise ValueError("Invalid reserve_credits")
+
+    if type(allow_unknown) is not bool:
+        raise ValueError("Invalid allow_unknown")
+
+    remaining = snapshot.credits_left
+
+    if remaining is None:
+        if allow_unknown:
+            return CreditDecision(
+                allowed=True,
+                remaining=None,
+                reason="Provider credits unknown; explicitly allowed",
+            )
+
+        raise ProviderCreditStatusUnknown(
+            "Provider remaining credits unavailable"
+        )
+
+    if remaining < required_credits + reserve_credits:
+        raise ProviderCreditLimitReached(
+            "Insufficient provider credits for requested operation"
+        )
+
+    return CreditDecision(
+        allowed=True,
+        remaining=remaining,
+        reason="Sufficient provider credits reported",
+    )
+

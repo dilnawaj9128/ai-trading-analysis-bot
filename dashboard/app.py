@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+from dashboard.modern_theme import apply_modern_theme  # STAGE 19 MODERN UI THEME
 
 from dashboard.report_loader import (
     DashboardReportError,
@@ -27,6 +28,7 @@ def main():
         layout="wide",
     )
 
+    apply_modern_theme()
     st.title("AI Trading Research Dashboard")
     st.caption(
         "Historical EUR/USD research | UTC | Read-only"
@@ -137,7 +139,7 @@ def main():
 
         st.dataframe(
             hourly,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -158,7 +160,7 @@ def main():
 
         st.dataframe(
             ranking,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -187,7 +189,7 @@ def main():
 
         st.dataframe(
             pd.DataFrame(session_rows),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
     else:

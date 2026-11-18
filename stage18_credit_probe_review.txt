@@ -1,0 +1,1064 @@
+========== market_data/twelve_data_client.py ==========
+
+"""Research-only Twelve Data REST client.
+
+Safety:
+- No broker API, orders, or trading signals.
+- Conservative persistent request-budget guard.
+- Explicit UTC timestamps and OHLC validation.
+- Manual fetch only in Stage 7.2.
+"""
+
+from __future__ import annotations
+
+import fcntl
+import json
+import math
+import os
+import time
+import tempfile
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import pandas as pd
+import requests
+
+from config.market_config import (
+    ResearchConfig,
+    create_research_config,
+)
+
+API_URL = "https://api.twelvedata.com/time_series"
+STATE_PATH = Path("data/api_usage/twelve_data_budget.json")
+
+# Conservative local limits, not a guarantee of account entitlements.
+MINUTE_LIMIT = 8
+DAY_LIMIT = 800
+RESERVE_PER_REQUEST = 1
+TIMEOUT_SECONDS = 15
+MAX_CANDLES = 120
+
+INTERVAL_SECONDS = {
+    "1min": 60,
+    "5min": 300,
+    "15min": 900,
+}
+
+
+class MarketDataError(RuntimeError):
+    pass
+
+
+class BudgetExceeded(MarketDataError):
+    pass
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
+
+
+def _validate_limits():
+    if MINUTE_LIMIT < 1 or DAY_LIMIT < 1:
+        raise MarketDataError("Invalid local API budget limits")
+    if RESERVE_PER_REQUEST < 1:
+        raise MarketDataError("Invalid request reservation")
+
+
+
+def _save_budget_atomic(path, payload):
+    """Atomically replace the budget state and sync its directory."""
+    temporary = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=".budget_",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(payload, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        os.replace(temporary, path)
+
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def reserve_request(path=STATE_PATH, now=None):
+    """Reserve estimated API usage before network access.
+
+    Uses a separate stable lock file and atomic budget-state writes.
+    Reservations are never automatically refunded.
+    """
+    _validate_limits()
+
+    now = now or utc_now()
+    if now.tzinfo is None:
+        raise MarketDataError("Budget time must be timezone-aware")
+
+    now = now.astimezone(timezone.utc)
+    minute = now.strftime("%Y-%m-%dT%H:%MZ")
+    day = now.strftime("%Y-%m-%d")
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    lock_path = path.with_name(path.name + ".lock")
+
+    with lock_path.open("a+b") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+
+        try:
+            # Fail closed if the lock path was replaced.
+            locked = os.fstat(lock_file.fileno())
+            current = os.stat(lock_path)
+
+            if (
+                locked.st_dev != current.st_dev
+                or locked.st_ino != current.st_ino
+            ):
+                raise MarketDataError(
+                    "Budget lock identity changed"
+                )
+
+            try:
+                raw = path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                # Only a genuinely missing file is a fresh budget.
+                state = {}
+            else:
+                if not raw.strip():
+                    raise MarketDataError(
+                        "Existing budget state empty or corrupted; "
+                        "refusing API request"
+                    )
+
+                try:
+                    state = json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    raise MarketDataError(
+                        "Budget state corrupted; refusing API request"
+                    ) from exc
+
+            if not isinstance(state, dict):
+                raise MarketDataError("Invalid budget state")
+
+            if state.get("minute") != minute:
+                minute_used = 0
+            else:
+                minute_used = state.get("minute_used", 0)
+
+            if state.get("day") != day:
+                day_used = 0
+            else:
+                day_used = state.get("day_used", 0)
+
+            if (
+                type(minute_used) is not int
+                or type(day_used) is not int
+                or minute_used < 0
+                or day_used < 0
+            ):
+                raise MarketDataError("Invalid budget counters")
+
+            if minute_used + RESERVE_PER_REQUEST > MINUTE_LIMIT:
+                raise BudgetExceeded("Local minute budget exhausted")
+
+            if day_used + RESERVE_PER_REQUEST > DAY_LIMIT:
+                raise BudgetExceeded("Local daily budget exhausted")
+
+            updated = {
+                "minute": minute,
+                "minute_used": minute_used + RESERVE_PER_REQUEST,
+                "day": day,
+                "day_used": day_used + RESERVE_PER_REQUEST,
+            }
+
+            _save_budget_atomic(path, updated)
+            return updated
+
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+
+def parse_candles(payload, config, now=None):
+    """Parse and validate recent OHLC candles.
+
+    Returned candles are research-only. In-progress candles
+    are excluded conservatively using UTC interval boundaries.
+    """
+    now = now or utc_now()
+    if now.tzinfo is None:
+        raise MarketDataError("Current time must have a timezone")
+    now = now.astimezone(timezone.utc)
+
+    if not isinstance(payload, dict):
+        raise MarketDataError("Invalid API response structure")
+
+    if payload.get("status") == "error" or payload.get("code"):
+        raise MarketDataError(
+            f"Provider rejected request: {payload.get('message', 'unknown')}"
+        )
+
+    values = payload.get("values")
+    if not isinstance(values, list) or not values:
+        raise MarketDataError("API returned no candles")
+
+    metadata = payload.get("meta")
+    if not isinstance(metadata, dict):
+        raise MarketDataError("Missing provider metadata")
+
+    returned_symbol = metadata.get("symbol")
+    returned_interval = metadata.get("interval")
+
+    if returned_symbol != config.symbol:
+        raise MarketDataError("Provider symbol mismatch")
+
+    if returned_interval != config.timeframe:
+        raise MarketDataError("Provider interval mismatch")
+
+    interval = INTERVAL_SECONDS[config.timeframe]
+    rows = []
+    seen = set()
+
+    for item in values:
+        if not isinstance(item, dict):
+            raise MarketDataError("Malformed candle")
+
+        try:
+            stamp = datetime.strptime(
+                item["datetime"], "%Y-%m-%d %H:%M:%S"
+            ).replace(tzinfo=timezone.utc)
+
+            o = float(item["open"])
+            h = float(item["high"])
+            l = float(item["low"])
+            c = float(item["close"])
+        except (KeyError, ValueError, TypeError) as exc:
+            raise MarketDataError("Invalid candle fields") from exc
+
+        if not all(math.isfinite(x) for x in (o, h, l, c)):
+            raise MarketDataError("Non-finite OHLC value")
+
+        if l > min(o, c) or h < max(o, c) or l > h:
+            raise MarketDataError("Invalid OHLC relationship")
+
+        if min(o, h, l, c) <= 0:
+            raise MarketDataError("Non-positive OHLC value")
+
+        if stamp in seen:
+            raise MarketDataError("Duplicate candle timestamp")
+        seen.add(stamp)
+
+        if stamp > now:
+            raise MarketDataError("Future candle timestamp")
+
+        # Exclude candles whose interval has not yet ended.
+        if stamp + timedelta(seconds=interval) > now:
+            continue
+
+        rows.append({
+            "timestamp": stamp,
+            "Open": o,
+            "High": h,
+            "Low": l,
+            "Close": c,
+        })
+
+    if not rows:
+        raise MarketDataError("No completed candles available")
+
+    frame = pd.DataFrame(rows).sort_values("timestamp")
+    frame = frame.reset_index(drop=True)
+
+    # Never silently treat gaps as continuous data.
+    diffs = frame["timestamp"].diff().dropna()
+    gaps = int((diffs > pd.Timedelta(seconds=interval)).sum())
+
+    latest = frame["timestamp"].iloc[-1].to_pydatetime()
+    age_seconds = (now - latest).total_seconds()
+
+    # A conservative monitoring rule, not proof of feed quality.
+    stale = age_seconds > interval * 3
+
+    return {
+        "frame": frame,
+        "symbol": config.symbol,
+        "interval": config.timeframe,
+        "candles": len(frame),
+        "gaps": gaps,
+        "latest_utc": latest.isoformat(),
+        "age_seconds": age_seconds,
+        "stale": stale,
+        "analysis_only": True,
+        "execution_enabled": False,
+        "directional_backtesting_allowed": False,
+    }
+
+
+def fetch_recent_candles(
+    config: ResearchConfig,
+    *,
+    api_key=None,
+    state_path=STATE_PATH,
+    now=None,
+    session=None,
+):
+    """Fetch recent candles with budget reservation first."""
+
+    # Revalidate even if caller constructs a dataclass directly.
+    validated = create_research_config(
+        config.platform,
+        config.market,
+        config.symbol,
+        config.timeframe,
+        config.expiry_minutes,
+    )
+
+    if config != validated:
+        raise MarketDataError("Unsafe or modified research config")
+
+    key = (
+        api_key
+        if api_key is not None
+        else os.environ.get("TWELVE_DATA_API_KEY")
+    )
+    if not key:
+        raise MarketDataError("TWELVE_DATA_API_KEY is missing")
+
+    now = now or utc_now()
+    if now.tzinfo is None:
+        raise MarketDataError("Current time must have a timezone")
+    now = now.astimezone(timezone.utc)
+
+    reserve_request(state_path, now=now)
+
+    client = session if session is not None else requests
+
+    try:
+        response = client.get(
+            API_URL,
+            params={
+                "symbol": config.symbol,
+                "interval": config.timeframe,
+                "outputsize": MAX_CANDLES,
+                "timezone": "UTC",
+                "apikey": key,
+                "format": "JSON",
+            },
+            timeout=TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise MarketDataError(
+            "Twelve Data request failed or returned invalid JSON"
+        ) from exc
+
+    return parse_candles(payload, config, now=now)
+
+
+========== market_data/unified_request_guard.py ==========
+"""Conservative atomic provider-credit authorization.
+
+Provider-reported credits are never modified here.
+All local reservations are stored in one locked ledger.
+Research-only: no HTTP calls or trading execution.
+"""
+
+import fcntl
+import json
+import os
+import tempfile
+import uuid
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+from market_data.authorization_journal import (
+    journal_path_for,
+    load_journal,
+    create_intent,
+    finalize_intent,
+    AuthorizationJournalError,
+)
+from market_data.pre_request_credit_gate import check_before_request
+from market_data.provider_credit_guard import ProviderCreditLimitReached
+from market_data.provider_credit_state import DEFAULT_PATH
+from market_data.twelve_data_client import STATE_PATH, reserve_request
+
+
+@dataclass(frozen=True)
+class RequestAuthorization:
+    authorized: bool
+    provider_credits_remaining: int
+    local_budget_reserved: bool
+    request_id: str = ""
+
+
+def _save_json_atomic(path, payload):
+    temporary = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            dir=path.parent,
+            prefix=".reservations_",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(payload, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        os.replace(temporary, path)
+        _sync_directory(path.parent)
+
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _save_authorization_history(path):
+    """Persist independent initialization evidence atomically."""
+    temporary = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=".authorization_history_",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(
+                {"version": 1, "initialized": True},
+                handle,
+            )
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        os.replace(temporary, path)
+        _sync_directory(path.parent)
+
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _load_ledger(path):
+    if not path.exists():
+        return {
+            "version": 2,
+            "reserved": 0,
+            "legacy_reserved": 0,
+            "requests": {},
+        }
+
+    try:
+        payload = json.loads(path.read_text())
+
+        if type(payload) is not dict:
+            raise ValueError("Invalid ledger")
+
+        version = payload.get("version")
+
+        if version == 1:
+            # Legacy V1 has aggregate reservations only.
+            # Reject unknown fields instead of silently
+            # discarding potentially important evidence.
+            if set(payload) != {"version", "reserved"}:
+                raise ValueError(
+                    "Invalid legacy ledger structure"
+                )
+
+            reserved = payload.get("reserved")
+
+            if type(reserved) is not int or reserved < 0:
+                raise ValueError("Invalid legacy reservation")
+
+            return {
+                "version": 2,
+                "reserved": reserved,
+                "legacy_reserved": reserved,
+                "requests": {},
+            }
+
+        if version != 2:
+            raise ValueError("Unsupported ledger version")
+
+        reserved = payload.get("reserved")
+        legacy = payload.get("legacy_reserved")
+        requests = payload.get("requests")
+
+        if (
+            type(reserved) is not int
+            or reserved < 0
+            or type(legacy) is not int
+            or legacy < 0
+            or type(requests) is not dict
+        ):
+            raise ValueError("Invalid ledger structure")
+
+        outstanding = legacy
+
+        for request_id, entry in requests.items():
+            if (
+                not isinstance(request_id, str)
+                or not request_id
+                or type(entry) is not dict
+                or type(entry.get("credits")) is not int
+                or entry["credits"] < 1
+                or entry.get("status") not in (
+                    "PENDING",
+                    "SETTLED",
+                    "UNCERTAIN",
+                )
+            ):
+                raise ValueError("Invalid reservation entry")
+
+            if entry["status"] != "SETTLED":
+                outstanding += entry["credits"]
+
+        if outstanding != reserved:
+            raise ValueError("Reservation accounting mismatch")
+
+        return payload
+
+    except (OSError, ValueError, TypeError) as exc:
+        raise ValueError("Invalid reservation ledger") from exc
+
+
+
+def _sync_directory(directory):
+    """Persist directory-entry changes where supported."""
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _create_recovery_marker(
+    path, *, request_id, authorized_at, credits
+):
+    """Create durable transaction intent before budget reservation."""
+    payload = {
+        "recovery_required": True,
+        "reason": "authorization_commit_uncertain",
+        "request_id": request_id,
+        "authorized_at": authorized_at,
+        "credits": credits,
+    }
+
+    # Exclusive creation prevents silently replacing a marker.
+    with path.open("x", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+    _sync_directory(path.parent)
+
+
+def _clear_recovery_marker(path):
+    path.unlink()
+    _sync_directory(path.parent)
+
+
+def authorize_request(
+    *,
+    provider_state_path=DEFAULT_PATH,
+    local_budget_path=STATE_PATH,
+    now=None,
+    required_credits=1,
+    reserve_credits=20,
+    max_age_seconds=300,
+):
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    if now.tzinfo is None:
+        raise ValueError("Timezone-aware datetime required")
+
+    provider_path = Path(provider_state_path)
+
+    lock_path = provider_path.with_name(
+        provider_path.name + ".lock"
+    )
+    ledger_path = provider_path.with_name(
+        provider_path.name + ".reservations.json"
+    )
+
+    provider_path.parent.mkdir(parents=True, exist_ok=True)
+    journal_path = journal_path_for(provider_path)
+
+    history_path = provider_path.with_name(
+        provider_path.name + ".authorization_history.json"
+    )
+
+    recovery_path = provider_path.with_name(
+        provider_path.name + ".recovery_required.json"
+    )
+
+    with open(lock_path, "a+b") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+
+        # Verify that the acquired lock still belongs to the
+        # lock file currently reachable at the expected path.
+        try:
+            locked_stat = os.fstat(lock_file.fileno())
+            path_stat = os.stat(lock_path)
+        except OSError as exc:
+            raise RuntimeError(
+                "Authorization lock identity unavailable"
+            ) from exc
+
+        if (
+            locked_stat.st_dev != path_stat.st_dev
+            or locked_stat.st_ino != path_stat.st_ino
+        ):
+            raise RuntimeError(
+                "Authorization lock identity changed"
+            )
+
+        try:
+            if recovery_path.exists():
+                from market_data.provider_credit_guard import (
+                    ProviderCreditStatusUnknown,
+                )
+                raise ProviderCreditStatusUnknown(
+                    "Authorization blocked: recovery required"
+                )
+
+            # Existing reservation evidence must not be silently
+            # accepted with a missing authorization journal.
+            if not journal_path.exists() and ledger_path.exists():
+                existing_ledger = _load_ledger(ledger_path)
+
+                # Legacy v1 ledgers predate the authorization
+                # journal. Preserve their existing reservations.
+                raw_ledger = json.loads(
+                    ledger_path.read_text(encoding="utf-8")
+                )
+
+                is_legacy = (
+                    type(raw_ledger) is dict
+                    and type(raw_ledger.get("version")) is int
+                    and raw_ledger["version"] == 1
+                )
+
+                if not is_legacy and (
+                    existing_ledger["requests"]
+                    or existing_ledger["reserved"] > 0
+                ):
+                    raise AuthorizationJournalError(
+                        "Authorization blocked: journal missing "
+                        "for existing reservations"
+                    )
+
+            # A previously initialized authorization history
+            # must never silently become a fresh installation.
+            if history_path.exists():
+                try:
+                    history = json.loads(
+                        history_path.read_text(encoding="utf-8")
+                    )
+                except (OSError, ValueError) as exc:
+                    raise AuthorizationJournalError(
+                        "Authorization history unreadable"
+                    ) from exc
+
+                if (
+                    type(history) is not dict
+                    or history.get("version") != 1
+                    or history.get("initialized") is not True
+                ):
+                    raise AuthorizationJournalError(
+                        "Invalid authorization history"
+                    )
+
+                if not journal_path.exists() or not ledger_path.exists():
+                    raise AuthorizationJournalError(
+                        "Authorization blocked: missing journal "
+                        "or ledger evidence"
+                    )
+
+            journal = load_journal(journal_path)
+            if any(
+                entry.get("status") != "FINALIZED"
+                for entry in journal["transactions"].values()
+            ):
+                raise AuthorizationJournalError(
+                    "Authorization blocked: unresolved journal intent"
+                )
+
+            decision = check_before_request(
+                path=provider_path,
+                now=now,
+                required_credits=required_credits,
+                reserve_credits=reserve_credits,
+                max_age_seconds=max_age_seconds,
+            )
+
+            ledger = _load_ledger(ledger_path)
+
+            # Cross-check independently persisted authorization
+            # evidence before reserving any additional budget.
+            journal_transactions = journal["transactions"]
+            ledger_requests = ledger["requests"]
+
+            for recorded_id, transaction in journal_transactions.items():
+                reservation = ledger_requests.get(recorded_id)
+
+                if reservation is None:
+                    raise AuthorizationJournalError(
+                        "Authorization blocked: journal-ledger "
+                        "request mismatch"
+                    )
+
+                if reservation["credits"] != transaction["credits"]:
+                    raise AuthorizationJournalError(
+                        "Authorization blocked: journal-ledger "
+                        "credit mismatch"
+                    )
+
+            for recorded_id in ledger_requests:
+                if recorded_id not in journal_transactions:
+                    raise AuthorizationJournalError(
+                        "Authorization blocked: ledger request "
+                        "missing from journal"
+                    )
+
+            available = (
+                decision.remaining_credits - ledger["reserved"]
+            )
+
+            if available < required_credits + reserve_credits:
+                raise ProviderCreditLimitReached(
+                    "Insufficient credits after local reservations"
+                )
+
+            # Generate the request ID before any budget mutation.
+            request_id = uuid.uuid4().hex
+
+            if request_id in ledger["requests"]:
+                raise ValueError("Duplicate request ID")
+
+            # Persist initialization evidence before creating
+            # the first authorization intent.
+            if not history_path.exists():
+                _save_authorization_history(history_path)
+
+            create_intent(
+                journal_path,
+                request_id=request_id,
+                authorized_at=now.astimezone(timezone.utc).isoformat(),
+                credits=required_credits,
+            )
+
+            # Durable write-ahead intent: never refund automatically.
+            _create_recovery_marker(
+                recovery_path,
+                request_id=request_id,
+                authorized_at=now.astimezone(timezone.utc).isoformat(),
+                credits=required_credits,
+            )
+
+            # Local request quota must succeed before ledger commit.
+            reserve_request(
+                path=local_budget_path,
+                now=now,
+            )
+
+            # Read the snapshot timestamp while holding the
+            # same lock used by provider-credit refresh.
+            provider_payload = json.loads(
+                provider_path.read_text()
+            )
+
+            snapshot_observed_at = provider_payload["observed_at"]
+
+            # Preserve strict timezone-aware metadata.
+            observed = datetime.fromisoformat(
+                snapshot_observed_at
+            )
+
+            if observed.tzinfo is None:
+                raise ValueError(
+                    "Provider observation timestamp must be timezone-aware"
+                )
+
+            ledger["requests"][request_id] = {
+                "credits": required_credits,
+                "status": "PENDING",
+                "authorized_at": now.astimezone(
+                    timezone.utc
+                ).isoformat(),
+                "snapshot_observed_at": observed.astimezone(
+                    timezone.utc
+                ).isoformat(),
+            }
+
+            ledger["reserved"] += required_credits
+
+            _save_json_atomic(ledger_path, ledger)
+
+            finalize_intent(journal_path, request_id)
+
+            # A failed cleanup leaves authorization blocked,
+            # rather than risking an untracked new request.
+            _clear_recovery_marker(recovery_path)
+
+            return RequestAuthorization(
+                authorized=True,
+                provider_credits_remaining=(
+                    available - required_credits
+                ),
+                local_budget_reserved=True,
+                request_id=request_id,
+            )
+
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+========== market_data/authorization_ledger.py ==========
+"""Locked reservation lifecycle transitions for research API requests.
+
+Does not perform HTTP requests or trading execution.
+"""
+
+import fcntl
+import os
+from pathlib import Path
+
+from market_data.provider_credit_state import DEFAULT_PATH
+from market_data.unified_request_guard import (
+    _load_ledger,
+    _save_json_atomic,
+)
+
+
+def transition_authorization(
+    *,
+    provider_state_path=DEFAULT_PATH,
+    request_id,
+    status,
+):
+    """Transition one request while preserving aggregate accounting."""
+
+    if not isinstance(request_id, str) or not request_id.strip():
+        raise ValueError("Valid request_id required")
+
+    if status not in ("SETTLED", "UNCERTAIN"):
+        raise ValueError("Unsupported reservation transition")
+
+    # No verified request-specific reconciliation exists yet.
+    # Never release reserved credits without trusted evidence.
+    if status == "SETTLED":
+        raise ValueError(
+            "Settlement requires verified reconciliation"
+        )
+
+    provider_path = Path(provider_state_path)
+
+    lock_path = provider_path.with_name(
+        provider_path.name + ".lock"
+    )
+
+    ledger_path = provider_path.with_name(
+        provider_path.name + ".reservations.json"
+    )
+
+    # Never create an empty ledger during a transition.
+    if not ledger_path.exists():
+        raise ValueError("Reservation ledger missing")
+
+    provider_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(lock_path, "a+b") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+
+        try:
+            # Verify that the locked file descriptor still
+            # represents the lock file reachable by its path.
+            try:
+                locked_stat = os.fstat(lock_file.fileno())
+                path_stat = os.stat(lock_path)
+            except OSError as exc:
+                raise RuntimeError(
+                    "Authorization lock identity unavailable"
+                ) from exc
+
+            if (
+                locked_stat.st_dev != path_stat.st_dev
+                or locked_stat.st_ino != path_stat.st_ino
+            ):
+                raise RuntimeError(
+                    "Authorization lock identity changed"
+                )
+
+            ledger = _load_ledger(ledger_path)
+
+            # A missing ledger must not be treated as an empty ledger.
+            if not ledger_path.exists():
+                raise ValueError("Reservation ledger missing")
+
+            entry = ledger["requests"].get(request_id)
+
+            if entry is None:
+                raise ValueError("Unknown request ID")
+
+            current_status = entry["status"]
+
+            if current_status != "PENDING":
+                raise ValueError(
+                    "Only PENDING reservations can transition"
+                )
+
+            if status == "SETTLED":
+                credits = entry["credits"]
+
+                if ledger["reserved"] < credits:
+                    raise ValueError(
+                        "Reservation accounting mismatch"
+                    )
+
+                ledger["reserved"] -= credits
+
+            # UNCERTAIN reservations remain counted.
+            entry["status"] = status
+
+            _save_json_atomic(ledger_path, ledger)
+
+            return {
+                "request_id": request_id,
+                "status": status,
+                "reserved": ledger["reserved"],
+            }
+
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+========== market_data/authorized_live_fetch.py ==========
+"""Authorized Twelve Data live research fetch. No broker execution."""
+
+import os
+from datetime import timezone
+
+import requests
+
+from config.market_config import create_research_config
+from market_data import twelve_data_client as td
+from market_data.authorization_ledger import transition_authorization
+from market_data.credit_response_handler import refresh_credits_from_response
+from market_data.provider_credit_state import DEFAULT_PATH
+from market_data.unified_request_guard import authorize_request
+
+
+def fetch_authorized_live_candles(
+    config,
+    *,
+    api_key=None,
+    state_path=td.STATE_PATH,
+    provider_credit_path=DEFAULT_PATH,
+    now=None,
+    session=None,
+):
+    """Validate, authorize once, fetch once, and preserve reservation evidence."""
+
+    validated = create_research_config(
+        config.platform,
+        config.market,
+        config.symbol,
+        config.timeframe,
+        config.expiry_minutes,
+    )
+    if config != validated:
+        raise td.MarketDataError("Unsafe or modified research config")
+
+    key = api_key if api_key is not None else os.environ.get(
+        "TWELVE_DATA_API_KEY"
+    )
+    if not key:
+        raise td.MarketDataError("TWELVE_DATA_API_KEY is missing")
+
+    now = now if now is not None else td.utc_now()
+    if now.tzinfo is None:
+        raise td.MarketDataError("Current time must have a timezone")
+    now = now.astimezone(timezone.utc)
+
+    # This call already reserves the local request budget.
+    authorization = authorize_request(
+        provider_state_path=provider_credit_path,
+        local_budget_path=state_path,
+        now=now,
+    )
+
+    if (
+        not authorization.authorized
+        or not authorization.local_budget_reserved
+        or not authorization.request_id
+    ):
+        raise td.MarketDataError("Incomplete request authorization")
+
+    client = session if session is not None else requests
+
+    try:
+        response = client.get(
+            td.API_URL,
+            params={
+                "symbol": config.symbol,
+                "interval": config.timeframe,
+                "outputsize": td.MAX_CANDLES,
+                "timezone": "UTC",
+                "apikey": key,
+                "format": "JSON",
+            },
+            timeout=td.TIMEOUT_SECONDS,
+        )
+
+        response.raise_for_status()
+        payload = response.json()
+        result = td.parse_candles(payload, config, now=now)
+
+        # A response snapshot does not settle this reservation.
+        refresh_credits_from_response(
+            response,
+            path=provider_credit_path,
+            now=now,
+        )
+
+        return result
+
+    except Exception as exc:
+        # Keep credits reserved after an uncertain request outcome.
+        transition_authorization(
+            provider_state_path=provider_credit_path,
+            request_id=authorization.request_id,
+            status="UNCERTAIN",
+        )
+
+        if isinstance(exc, td.MarketDataError):
+            raise
+
+        raise td.MarketDataError(
+            "Authorized live fetch failed; reservation retained"
+        ) from exc
+

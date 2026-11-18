@@ -1,0 +1,531 @@
+========== market_data/authorization_journal.py ==========
+"""Durable authorization intent journal.
+
+Research-only. No API calls or trading execution.
+All journal operations must run under the provider lock.
+"""
+
+import json
+import os
+import tempfile
+from datetime import datetime
+from pathlib import Path
+
+
+class AuthorizationJournalError(RuntimeError):
+    pass
+
+
+def journal_path_for(provider_path):
+    provider_path = Path(provider_path)
+    return provider_path.with_name(
+        provider_path.name + ".authorization_journal.json"
+    )
+
+
+def load_journal(path):
+    """Load and strictly validate the authorization journal."""
+    path = Path(path)
+
+    if not path.exists():
+        return {
+            "version": 1,
+            "transactions": {},
+        }
+
+    try:
+        payload = json.loads(
+            path.read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError) as exc:
+        raise AuthorizationJournalError(
+            "Authorization journal unreadable"
+        ) from exc
+
+    if (
+        type(payload) is not dict
+        or type(payload.get("version")) is not int
+        or payload["version"] != 1
+        or type(payload.get("transactions")) is not dict
+    ):
+        raise AuthorizationJournalError(
+            "Invalid authorization journal"
+        )
+
+    for request_id, transaction in payload["transactions"].items():
+        if (
+            type(request_id) is not str
+            or len(request_id) != 32
+            or any(
+                char not in "0123456789abcdef"
+                for char in request_id
+            )
+        ):
+            raise AuthorizationJournalError(
+                "Invalid journal request ID"
+            )
+
+        if type(transaction) is not dict:
+            raise AuthorizationJournalError(
+                "Invalid journal transaction"
+            )
+
+        if transaction.get("status") not in (
+            "INTENT",
+            "FINALIZED",
+        ):
+            raise AuthorizationJournalError(
+                "Invalid journal transaction status"
+            )
+
+        credits = transaction.get("credits")
+
+        if type(credits) is not int or credits < 1:
+            raise AuthorizationJournalError(
+                "Invalid journal transaction credits"
+            )
+
+        authorized_at = transaction.get("authorized_at")
+
+        if type(authorized_at) is not str:
+            raise AuthorizationJournalError(
+                "Invalid journal authorization timestamp"
+            )
+
+        try:
+            timestamp = datetime.fromisoformat(
+                authorized_at
+            )
+        except ValueError as exc:
+            raise AuthorizationJournalError(
+                "Invalid journal authorization timestamp"
+            ) from exc
+
+        if (
+            timestamp.tzinfo is None
+            or timestamp.utcoffset() is None
+        ):
+            raise AuthorizationJournalError(
+                "Journal timestamp must be timezone-aware"
+            )
+
+    return payload
+
+
+def save_journal(path, payload):
+    path = Path(path)
+    temporary = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=".authorization_journal_",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(payload, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        os.replace(temporary, path)
+
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def create_intent(
+    path, *, request_id, authorized_at, credits
+):
+    journal = load_journal(path)
+
+    if request_id in journal["transactions"]:
+        raise AuthorizationJournalError(
+            "Duplicate authorization journal request ID"
+        )
+
+    journal["transactions"][request_id] = {
+        "authorized_at": authorized_at,
+        "credits": credits,
+        "status": "INTENT",
+    }
+
+    save_journal(path, journal)
+
+
+def finalize_intent(path, request_id):
+    journal = load_journal(path)
+
+    transaction = journal["transactions"].get(request_id)
+
+    if transaction is None:
+        raise AuthorizationJournalError(
+            "Authorization journal transaction missing"
+        )
+
+    if transaction["status"] != "INTENT":
+        raise AuthorizationJournalError(
+            "Authorization journal transaction not pending"
+        )
+
+    transaction["status"] = "FINALIZED"
+    save_journal(path, journal)
+========== market_data/provider_credit_state.py ==========
+"""Persistent provider credit state. No API calls."""
+
+import json
+import os
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+from market_data.api_credit_monitor import CreditSnapshot
+
+
+DEFAULT_PATH = Path("data/api_usage/provider_credits.json")
+
+
+def _utc(value):
+    if value.tzinfo is None:
+        raise ValueError("Timezone-aware datetime required")
+    return value.astimezone(timezone.utc)
+
+
+def save_credit_state(
+    snapshot: CreditSnapshot,
+    *,
+    path=DEFAULT_PATH,
+    now=None,
+):
+    if not isinstance(snapshot, CreditSnapshot):
+        raise ValueError("CreditSnapshot required")
+
+    if snapshot.credits_left is not None and (
+        type(snapshot.credits_left) is not int
+        or snapshot.credits_left < 0
+    ):
+        raise ValueError("Invalid credits_left")
+
+    if snapshot.credits_used is not None and (
+        type(snapshot.credits_used) is not int
+        or snapshot.credits_used < 0
+    ):
+        raise ValueError("Invalid credits_used")
+
+    now = _utc(now or datetime.now(timezone.utc))
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "version": 1,
+        "observed_at": now.isoformat(),
+        "credits_used": snapshot.credits_used,
+        "credits_left": snapshot.credits_left,
+    }
+
+    temporary = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            dir=path.parent,
+            prefix=".credits_",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(payload, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        os.replace(temporary, path)
+
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+    return path
+
+
+def load_credit_state(
+    *,
+    path=DEFAULT_PATH,
+    now=None,
+    max_age_seconds=300,
+):
+    if type(max_age_seconds) is not int or max_age_seconds < 0:
+        raise ValueError("Invalid max_age_seconds")
+
+    path = Path(path)
+
+    if not path.exists():
+        return None
+
+    try:
+        payload = json.loads(path.read_text())
+
+        if type(payload) is not dict or payload.get("version") != 1:
+            raise ValueError("Invalid state version")
+
+        observed_at = datetime.fromisoformat(
+            payload["observed_at"]
+        )
+        observed_at = _utc(observed_at)
+
+        now = _utc(now or datetime.now(timezone.utc))
+        age = (now - observed_at).total_seconds()
+
+        if age < 0 or age > max_age_seconds:
+            return None
+
+        used = payload["credits_used"]
+        left = payload["credits_left"]
+
+        for value in (used, left):
+            if value is not None and (
+                type(value) is not int or value < 0
+            ):
+                raise ValueError("Invalid credit value")
+
+        return CreditSnapshot(
+            credits_used=used,
+            credits_left=left,
+            low_credits=left is not None and left < 20,
+            information_available=used is not None or left is not None,
+        )
+
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise ValueError("Invalid provider credit state") from exc
+========== market_data/credit_response_handler.py ==========
+"""Conservative provider-credit snapshot refresh.
+
+Coordinates snapshot writes with authorization using the same file lock.
+Does not execute HTTP requests or trading operations.
+"""
+
+import fcntl
+import json
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+from market_data.api_credit_monitor import parse_credit_headers
+from market_data.provider_credit_state import (
+    DEFAULT_PATH,
+    save_credit_state,
+)
+
+
+@dataclass(frozen=True)
+class CreditRefreshResult:
+    updated: bool
+    credits_left: int | None
+    reason: str
+
+
+def refresh_credits_from_response(
+    response,
+    *,
+    path=DEFAULT_PATH,
+    now=None,
+) -> CreditRefreshResult:
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    if now.tzinfo is None:
+        raise ValueError("Timezone-aware datetime required")
+
+    now = now.astimezone(timezone.utc)
+
+    headers = getattr(response, "headers", None)
+
+    if headers is None:
+        return CreditRefreshResult(
+            updated=False,
+            credits_left=None,
+            reason="Response headers unavailable",
+        )
+
+    try:
+        snapshot = parse_credit_headers(headers)
+    except (TypeError, AttributeError):
+        return CreditRefreshResult(
+            updated=False,
+            credits_left=None,
+            reason="Invalid response headers",
+        )
+
+    if snapshot.credits_left is None:
+        return CreditRefreshResult(
+            updated=False,
+            credits_left=None,
+            reason="Provider remaining credits unavailable",
+        )
+
+    provider_path = Path(path)
+    provider_path.parent.mkdir(parents=True, exist_ok=True)
+
+    lock_path = provider_path.with_name(
+        provider_path.name + ".lock"
+    )
+
+    with open(lock_path, "a+b") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+
+        try:
+            if provider_path.exists():
+                try:
+                    current = json.loads(provider_path.read_text())
+                    if (
+                        type(current) is not dict
+                        or current.get("version") != 1
+                    ):
+                        raise ValueError("Invalid provider state")
+
+                    observed_at = datetime.fromisoformat(
+                        current["observed_at"]
+                    ).astimezone(timezone.utc)
+
+                    existing_left = current["credits_left"]
+
+                    if (
+                        type(existing_left) is not int
+                        or existing_left < 0
+                    ):
+                        raise ValueError("Invalid credits_left")
+
+                except (OSError, ValueError, TypeError, KeyError) as exc:
+                    raise ValueError(
+                        "Invalid existing provider credit state"
+                    ) from exc
+
+                if now < observed_at:
+                    return CreditRefreshResult(
+                        updated=False,
+                        credits_left=existing_left,
+                        reason="Older observation rejected",
+                    )
+
+                if (
+                    now == observed_at
+                    and snapshot.credits_left > existing_left
+                ):
+                    return CreditRefreshResult(
+                        updated=False,
+                        credits_left=existing_left,
+                        reason="Equal-time credit increase rejected",
+                    )
+
+            save_credit_state(
+                snapshot,
+                path=provider_path,
+                now=now,
+            )
+
+            return CreditRefreshResult(
+                updated=True,
+                credits_left=snapshot.credits_left,
+                reason="Provider credit snapshot updated",
+            )
+
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+========== market_data/credit_refresh_policy.py ==========
+"""Offline-only provider credit refresh policy.
+
+No HTTP, API key access, filesystem writes, or budget reservations.
+"""
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class CreditRefreshDecision:
+    action: str
+    reason: str
+    requires_approval: bool
+
+
+def decide_credit_refresh(
+    *,
+    snapshot_status: str,
+    explicitly_approved: bool = False,
+    local_budget_available: bool = False,
+    cooldown_satisfied: bool = False,
+    recovery_required: bool = False,
+) -> CreditRefreshDecision:
+
+    if snapshot_status not in (
+        "READY",
+        "LOW_CREDITS",
+        "UNKNOWN",
+    ):
+        raise ValueError("Invalid snapshot status")
+
+    for value in (
+        explicitly_approved,
+        local_budget_available,
+        cooldown_satisfied,
+        recovery_required,
+    ):
+        if type(value) is not bool:
+            raise ValueError("Policy flags must be boolean")
+
+    if recovery_required:
+        return CreditRefreshDecision(
+            "BLOCK",
+            "Authorization recovery is required",
+            False,
+        )
+
+    if snapshot_status == "READY":
+        return CreditRefreshDecision(
+            "NO_REFRESH",
+            "Fresh provider credits are sufficient",
+            False,
+        )
+
+    if snapshot_status == "LOW_CREDITS":
+        return CreditRefreshDecision(
+            "BLOCK",
+            "Fresh provider credits are insufficient",
+            False,
+        )
+
+    if not local_budget_available:
+        return CreditRefreshDecision(
+            "BLOCK",
+            "Local API budget unavailable",
+            False,
+        )
+
+    if not cooldown_satisfied:
+        return CreditRefreshDecision(
+            "BLOCK",
+            "Credit refresh cooldown active",
+            False,
+        )
+
+    if not explicitly_approved:
+        return CreditRefreshDecision(
+            "REQUIRE_APPROVAL",
+            "Explicit approval required for credit refresh",
+            True,
+        )
+
+    return CreditRefreshDecision(
+        "ELIGIBLE",
+        "Offline policy conditions satisfied; no request executed",
+        False,
+    )

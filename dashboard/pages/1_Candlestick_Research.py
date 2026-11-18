@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from dashboard.modern_theme import apply_modern_theme  # STAGE 19 MODERN UI THEME
 
 from dashboard.chart_data import (
     accepted_datasets,
@@ -104,6 +105,7 @@ def main():
         layout="wide",
     )
 
+    apply_modern_theme()
     st.title("Historical Candlestick Research")
 
     st.warning(
@@ -218,19 +220,19 @@ def main():
         candlestick_figure(
             visible, show_ema9, show_ema21
         ),
-        use_container_width=True,
+        width="stretch",
     )
 
     if show_rsi:
         st.plotly_chart(
             rsi_figure(visible),
-            use_container_width=True,
+            width="stretch",
         )
 
     with st.expander("Historical OHLC and indicators"):
         st.dataframe(
             visible,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -245,7 +247,7 @@ def main():
     if not comparison.empty:
         st.dataframe(
             comparison,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 

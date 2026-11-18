@@ -1,0 +1,275 @@
+=== Bootstrap coordinator ===
+"""One-time bootstrap coordinator for research-only API requests."""
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+from market_data.bootstrap_authorization import (
+    claim_bootstrap_approval,
+)
+from market_data.credit_bootstrap_policy import (
+    decide_credit_bootstrap,
+)
+from market_data.credit_response_handler import (
+    refresh_credits_from_response,
+)
+from market_data.provider_credit_state import DEFAULT_PATH
+from market_data.twelve_data_client import (
+    STATE_PATH,
+    reserve_request,
+)
+
+
+class BootstrapNotPermitted(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class BootstrapResult:
+    request_executed: bool
+    credits_refreshed: bool
+    credits_left: int | None
+
+
+def execute_bootstrap(
+    *,
+    request_callback,
+    approval_id,
+    response_validator=None,
+    explicitly_approved=False,
+    approval_path="data/api_usage/bootstrap_claim.json",
+    provider_state_path=DEFAULT_PATH,
+    local_budget_path=STATE_PATH,
+    now=None,
+):
+    if not callable(request_callback):
+        raise ValueError("Callable request_callback required")
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    decision = decide_credit_bootstrap(
+        path=provider_state_path,
+        now=now,
+        bootstrap_approved=explicitly_approved,
+    )
+
+    if decision.action != "BOOTSTRAP":
+        raise BootstrapNotPermitted(
+            f"Bootstrap not permitted: {decision.action}"
+        )
+
+    # Claim approval before spending local budget or making HTTP calls.
+    claim_bootstrap_approval(
+        approval_id=approval_id,
+        explicitly_approved=explicitly_approved,
+        path=approval_path,
+        now=now,
+    )
+
+    # Local quota remains enforced for bootstrap requests.
+    reserve_request(
+        path=local_budget_path,
+        now=now,
+    )
+
+    response = request_callback()
+
+    # A callback must return a real HTTP-like response with a status.
+    # Never treat a missing status or HTTP error as success.
+    status = getattr(response, "status_code", None)
+
+    if type(status) is not int or not 200 <= status < 300:
+        raise BootstrapNotPermitted(
+            f"Bootstrap HTTP response not successful: {status}"
+        )
+
+    # Validate the response before updating provider credit state.
+    if response_validator is not None:
+        if not callable(response_validator):
+            raise ValueError("response_validator must be callable")
+        response_validator(response)
+
+    refresh = refresh_credits_from_response(
+        response,
+        path=provider_state_path,
+        now=now,
+    )
+
+    return BootstrapResult(
+        request_executed=True,
+        credits_refreshed=refresh.updated,
+        credits_left=refresh.credits_left,
+    )
+=== Bootstrap usage and tests ===
+market_data/historical_collector.py-258-    outputsize=MAX_HISTORY_BATCH,
+market_data/historical_collector.py-259-):
+market_data/historical_collector.py-260-    """One-time approved historical bootstrap; research-only."""
+market_data/historical_collector.py-261-
+market_data/historical_collector.py:262:    from market_data.bootstrap_request_coordinator import execute_bootstrap
+market_data/historical_collector.py-263-    from market_data.provider_credit_state import DEFAULT_PATH
+market_data/historical_collector.py-264-
+market_data/historical_collector.py-265-    if provider_credit_path is None:
+market_data/historical_collector.py-266-        provider_credit_path = DEFAULT_PATH
+--
+tests/test_bootstrap_historical_integration.py-7-from config.market_config import create_research_config
+tests/test_bootstrap_historical_integration.py-8-from market_data.historical_collector import (
+tests/test_bootstrap_historical_integration.py-9-    fetch_bootstrap_historical_candles,
+tests/test_bootstrap_historical_integration.py-10-)
+tests/test_bootstrap_historical_integration.py:11:from market_data.bootstrap_request_coordinator import BootstrapNotPermitted
+tests/test_bootstrap_historical_integration.py-12-
+tests/test_bootstrap_historical_integration.py-13-
+tests/test_bootstrap_historical_integration.py-14-NOW = datetime(2026, 11, 13, 12, 0, tzinfo=timezone.utc)
+tests/test_bootstrap_historical_integration.py-15-
+--
+tests/test_bootstrap_request_coordinator.py-6-from market_data.api_credit_monitor import CreditSnapshot
+tests/test_bootstrap_request_coordinator.py-7-from market_data.bootstrap_authorization import (
+tests/test_bootstrap_request_coordinator.py-8-    BootstrapApprovalAlreadyUsed,
+tests/test_bootstrap_request_coordinator.py-9-)
+tests/test_bootstrap_request_coordinator.py:10:from market_data.bootstrap_request_coordinator import (
+tests/test_bootstrap_request_coordinator.py-11-    BootstrapNotPermitted,
+tests/test_bootstrap_request_coordinator.py-12-    execute_bootstrap,
+tests/test_bootstrap_request_coordinator.py-13-)
+tests/test_bootstrap_request_coordinator.py-14-from market_data.provider_credit_state import (
+--
+tests/test_bootstrap_request_coordinator.py-107-def test_local_budget_failure_prevents_http(tmp_path):
+tests/test_bootstrap_request_coordinator.py-108-    callback = Mock()
+tests/test_bootstrap_request_coordinator.py-109-
+tests/test_bootstrap_request_coordinator.py-110-    with patch(
+tests/test_bootstrap_request_coordinator.py:111:        "market_data.bootstrap_request_coordinator.reserve_request",
+tests/test_bootstrap_request_coordinator.py-112-        side_effect=RuntimeError("Budget unavailable"),
+tests/test_bootstrap_request_coordinator.py-113-    ):
+tests/test_bootstrap_request_coordinator.py-114-        with pytest.raises(RuntimeError, match="Budget unavailable"):
+tests/test_bootstrap_request_coordinator.py-115-            execute(tmp_path, callback)
+=== API credit parsing ===
+"""Read-only provider API credit monitoring."""
+
+from dataclasses import dataclass
+from collections.abc import Mapping
+
+
+@dataclass(frozen=True)
+class CreditSnapshot:
+    credits_used: int | None
+    credits_left: int | None
+    low_credits: bool
+    information_available: bool
+
+
+def _parse_credit(value):
+    if value is None:
+        return None
+
+    try:
+        number = int(value)
+    except (ValueError, TypeError):
+        return None
+
+    if number < 0:
+        return None
+
+    return number
+
+
+def parse_credit_headers(
+    headers: Mapping,
+    *,
+    minimum_remaining: int = 20,
+) -> CreditSnapshot:
+
+    if type(minimum_remaining) is not int or minimum_remaining < 0:
+        raise ValueError("Invalid minimum_remaining")
+
+    normalized = {
+        str(key).lower(): value
+        for key, value in headers.items()
+    }
+
+    used = _parse_credit(
+        normalized.get("api-credits-used")
+    )
+
+    left = _parse_credit(
+        normalized.get("api-credits-left")
+    )
+
+    return CreditSnapshot(
+        credits_used=used,
+        credits_left=left,
+        low_credits=(
+            left is not None and left < minimum_remaining
+        ),
+        information_available=(
+            used is not None or left is not None
+        ),
+    )
+=== Provider credit guard ===
+"""Provider credit guard for research-only data acquisition.
+
+No API calls are performed by this module.
+"""
+
+from dataclasses import dataclass
+
+from market_data.api_credit_monitor import CreditSnapshot
+
+
+class ProviderCreditLimitReached(Exception):
+    """Provider reports insufficient remaining credits."""
+
+
+class ProviderCreditStatusUnknown(Exception):
+    """Provider credit information is unavailable."""
+
+
+@dataclass(frozen=True)
+class CreditDecision:
+    allowed: bool
+    remaining: int | None
+    reason: str
+
+
+def check_provider_credits(
+    snapshot: CreditSnapshot,
+    *,
+    required_credits: int = 1,
+    reserve_credits: int = 20,
+    allow_unknown: bool = False,
+) -> CreditDecision:
+
+    if not isinstance(snapshot, CreditSnapshot):
+        raise ValueError("CreditSnapshot required")
+
+    if type(required_credits) is not int or required_credits < 1:
+        raise ValueError("Invalid required_credits")
+
+    if type(reserve_credits) is not int or reserve_credits < 0:
+        raise ValueError("Invalid reserve_credits")
+
+    if type(allow_unknown) is not bool:
+        raise ValueError("Invalid allow_unknown")
+
+    remaining = snapshot.credits_left
+
+    if remaining is None:
+        if allow_unknown:
+            return CreditDecision(
+                allowed=True,
+                remaining=None,
+                reason="Provider credits unknown; explicitly allowed",
+            )
+
+        raise ProviderCreditStatusUnknown(
+            "Provider remaining credits unavailable"
+        )
+
+    if remaining < required_credits + reserve_credits:
+        raise ProviderCreditLimitReached(
+            "Insufficient provider credits for requested operation"
+        )
+
+    return CreditDecision(
+        allowed=True,
+        remaining=remaining,
+        reason="Sufficient provider credits reported",
+    )

@@ -1,0 +1,236 @@
+=== Authorized live fetch ===
+"""Authorized Twelve Data live research fetch. No broker execution."""
+
+import os
+from datetime import timezone
+
+import requests
+
+from config.market_config import create_research_config
+from market_data import twelve_data_client as td
+from market_data.authorization_ledger import transition_authorization
+from market_data.credit_response_handler import refresh_credits_from_response
+from market_data.provider_credit_state import DEFAULT_PATH
+from market_data.unified_request_guard import authorize_request
+
+
+def fetch_authorized_live_candles(
+    config,
+    *,
+    api_key=None,
+    state_path=td.STATE_PATH,
+    provider_credit_path=DEFAULT_PATH,
+    now=None,
+    session=None,
+):
+    """Validate, authorize once, fetch once, and preserve reservation evidence."""
+
+    validated = create_research_config(
+        config.platform,
+        config.market,
+        config.symbol,
+        config.timeframe,
+        config.expiry_minutes,
+    )
+    if config != validated:
+        raise td.MarketDataError("Unsafe or modified research config")
+
+    key = api_key if api_key is not None else os.environ.get(
+        "TWELVE_DATA_API_KEY"
+    )
+    if not key:
+        raise td.MarketDataError("TWELVE_DATA_API_KEY is missing")
+
+    now = now if now is not None else td.utc_now()
+    if now.tzinfo is None:
+        raise td.MarketDataError("Current time must have a timezone")
+    now = now.astimezone(timezone.utc)
+
+    # This call already reserves the local request budget.
+    authorization = authorize_request(
+        provider_state_path=provider_credit_path,
+        local_budget_path=state_path,
+        now=now,
+    )
+
+    if (
+        not authorization.authorized
+        or not authorization.local_budget_reserved
+        or not authorization.request_id
+    ):
+        raise td.MarketDataError("Incomplete request authorization")
+
+    client = session if session is not None else requests
+
+    try:
+        response = client.get(
+            td.API_URL,
+            params={
+                "symbol": config.symbol,
+                "interval": config.timeframe,
+                "outputsize": td.MAX_CANDLES,
+                "timezone": "UTC",
+                "apikey": key,
+                "format": "JSON",
+            },
+            timeout=td.TIMEOUT_SECONDS,
+        )
+
+        response.raise_for_status()
+        payload = response.json()
+        result = td.parse_candles(payload, config, now=now)
+
+        # A response snapshot does not settle this reservation.
+        refresh_credits_from_response(
+            response,
+            path=provider_credit_path,
+            now=now,
+        )
+
+        return result
+
+    except BaseException:
+        # Preserve the reservation on uncertain network or parsing outcomes.
+        # If the ledger transition itself fails, propagate that failure.
+        transition_authorization(
+            provider_state_path=provider_credit_path,
+            request_id=authorization.request_id,
+            status="UNCERTAIN",
+        )
+        raise
+=== New regression tests ===
+from datetime import datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+
+from config.market_config import create_research_config
+from market_data import authorized_live_fetch as live
+
+
+NOW = datetime(2026, 11, 18, 12, 0, tzinfo=timezone.utc)
+
+
+def config():
+    return create_research_config(
+        "quotex", "forex", "EUR/USD", "1min", 15
+    )
+
+
+def test_denied_authorization_never_calls_http():
+    with (
+        patch.object(
+            live,
+            "authorize_request",
+            side_effect=ValueError("Provider credits unavailable"),
+        ),
+        patch.object(live.requests, "get") as http,
+    ):
+        with pytest.raises(ValueError, match="Provider credits"):
+            live.fetch_authorized_live_candles(
+                config(), api_key="fake-key", now=NOW
+            )
+
+        http.assert_not_called()
+
+
+def test_successful_request_uses_one_authorization():
+    payload = {
+        "status": "ok",
+        "meta": {"symbol": "EUR/USD", "interval": "1min"},
+        "values": [{
+            "datetime": "2026-11-18 11:59:00",
+            "open": "1.1000",
+            "high": "1.1010",
+            "low": "1.0990",
+            "close": "1.1005",
+        }],
+    }
+
+    response = SimpleNamespace(
+        raise_for_status=lambda: None,
+        json=lambda: payload,
+        headers={},
+    )
+
+    session = SimpleNamespace(get=lambda *args, **kwargs: response)
+
+    authorization = SimpleNamespace(
+        authorized=True,
+        local_budget_reserved=True,
+        request_id="test-request-1",
+    )
+
+    with (
+        patch.object(
+            live, "authorize_request", return_value=authorization
+        ) as authorize,
+        patch.object(
+            live, "refresh_credits_from_response"
+        ),
+        patch.object(
+            live.td, "reserve_request"
+        ) as reserve,
+        patch.object(
+            live, "transition_authorization"
+        ) as transition,
+    ):
+        result = live.fetch_authorized_live_candles(
+            config(),
+            api_key="fake-key",
+            now=NOW,
+            session=session,
+        )
+
+        assert result["candles"] == 1
+        assert result["analysis_only"] is True
+        assert result["execution_enabled"] is False
+
+        authorize.assert_called_once()
+        reserve.assert_not_called()
+        transition.assert_not_called()
+
+
+def test_http_failure_marks_request_uncertain():
+    class FailedSession:
+        def get(self, *args, **kwargs):
+            raise ConnectionError("Network unavailable")
+
+    authorization = SimpleNamespace(
+        authorized=True,
+        local_budget_reserved=True,
+        request_id="test-request-2",
+    )
+
+    with (
+        patch.object(
+            live, "authorize_request", return_value=authorization
+        ),
+        patch.object(
+            live, "transition_authorization"
+        ) as transition,
+    ):
+        with pytest.raises(ConnectionError):
+            live.fetch_authorized_live_candles(
+                config(),
+                api_key="fake-key",
+                now=NOW,
+                session=FailedSession(),
+            )
+
+        transition.assert_called_once_with(
+            provider_state_path=live.DEFAULT_PATH,
+            request_id="test-request-2",
+            status="UNCERTAIN",
+        )
+=== Git status ===
+?? market_data/authorized_live_fetch.py
+?? stage18_api_safety_audit.txt
+?? stage18_authorization_contract.txt
+?? stage18_dashboard_audit.txt
+?? stage18_integration_review.txt
+?? stage18_integration_tests.txt
+?? stage18_live_patch_review.txt
+?? stage18_phase2a_review.txt
+?? tests/test_authorized_live_fetch.py

@@ -1,0 +1,60 @@
+=== Credit refresh and authorization references ===
+market_data/unified_request_guard.py:25:from market_data.pre_request_credit_gate import check_before_request
+market_data/unified_request_guard.py:211:def authorize_request(
+market_data/unified_request_guard.py:338:            decision = check_before_request(
+market_data/credit_response_handler.py:28:def refresh_credits_from_response(
+market_data/provider_credit_state.py:77:def load_credit_state(
+market_data/historical_collector.py:21:from market_data.unified_request_guard import authorize_request
+market_data/historical_collector.py:22:from market_data.credit_response_handler import refresh_credits_from_response
+market_data/historical_collector.py:102:            refresh_credits_from_response(
+market_data/historical_collector.py:185:        authorization = authorize_request(
+market_data/live_monitor.py:214:def run_monitor_poll(
+market_data/bootstrap_request_coordinator.py:10:    decide_credit_bootstrap,
+market_data/bootstrap_request_coordinator.py:13:    refresh_credits_from_response,
+market_data/bootstrap_request_coordinator.py:50:    decision = decide_credit_bootstrap(
+market_data/bootstrap_request_coordinator.py:92:    refresh = refresh_credits_from_response(
+market_data/credit_dashboard_status.py:7:    load_credit_state,
+market_data/credit_dashboard_status.py:20:    snapshot = load_credit_state(
+market_data/credit_bootstrap_policy.py:15:    load_credit_state,
+market_data/credit_bootstrap_policy.py:17:from market_data.pre_request_credit_gate import check_before_request
+market_data/credit_bootstrap_policy.py:27:def decide_credit_bootstrap(
+market_data/credit_bootstrap_policy.py:40:    snapshot = load_credit_state(
+market_data/credit_bootstrap_policy.py:61:        check_before_request(
+market_data/authorized_live_fetch.py:11:from market_data.credit_response_handler import refresh_credits_from_response
+market_data/authorized_live_fetch.py:13:from market_data.unified_request_guard import authorize_request
+market_data/authorized_live_fetch.py:49:    authorization = authorize_request(
+market_data/authorized_live_fetch.py:83:        refresh_credits_from_response(
+market_data/pre_request_credit_gate.py:12:    load_credit_state,
+market_data/pre_request_credit_gate.py:24:def check_before_request(
+market_data/pre_request_credit_gate.py:37:    snapshot = load_credit_state(
+dashboard/pages/4_Auto_Live_Monitor.py:16:from market_data.live_monitor import read_monitor_state, run_monitor_poll
+dashboard/pages/4_Auto_Live_Monitor.py:69:        outcome = run_monitor_poll(
+
+=== Existing credit-related modules ===
+market_data/api_credit_monitor.py
+market_data/authorization_journal.py
+market_data/authorization_journal.py.bak
+market_data/authorization_ledger.py
+market_data/authorization_ledger.py.part15c.bak
+market_data/bootstrap_authorization.py
+market_data/bootstrap_request_coordinator.py
+market_data/bootstrap_request_coordinator.py.bak
+market_data/credit_bootstrap_policy.py
+market_data/credit_dashboard_status.py
+market_data/credit_response_handler.py
+market_data/credit_response_handler.py.before_47l
+market_data/credit_response_handler.py.before_47s
+market_data/historical_collector.py.pre_credit_integration
+market_data/historical_collector.py.pre_guard_integration
+market_data/pre_request_credit_gate.py
+market_data/provider_credit_guard.py
+market_data/provider_credit_state.py
+market_data/unified_request_guard.py
+market_data/unified_request_guard.py.before_47k
+market_data/unified_request_guard.py.before_47l
+market_data/unified_request_guard.py.before_47o
+market_data/unified_request_guard.py.before_atomic_fix
+market_data/unified_request_guard.py.part7.bak
+market_data/unified_request_guard.py.part8.bak
+market_data/unified_request_guard.py.part8_fix.bak
+market_data/unified_request_guard.py.stage47j_backup

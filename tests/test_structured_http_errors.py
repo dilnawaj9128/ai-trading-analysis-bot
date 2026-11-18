@@ -79,3 +79,29 @@ def test_network_error_classification(config):
                 session=session,
                 outputsize=10,
             )
+
+
+@pytest.fixture(autouse=True)
+def mock_historical_authorization():
+    """Simulate successful authorization; never touch real quota files."""
+    from types import SimpleNamespace
+
+    approval = SimpleNamespace(
+        authorized=True,
+        local_budget_reserved=True,
+        request_id="offline-authorized-request",
+    )
+
+    with (
+        patch(
+            "market_data.historical_collector.authorize_request",
+            return_value=approval,
+        ) as authorization,
+        patch(
+            "market_data.historical_collector.refresh_credits_from_response"
+        ),
+        patch(
+            "market_data.authorization_ledger.transition_authorization"
+        ),
+    ):
+        yield authorization
