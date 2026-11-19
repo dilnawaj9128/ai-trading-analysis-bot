@@ -52,7 +52,7 @@ def assess_snapshot(candles: pd.DataFrame, *, observed_at, symbol="EUR/USD",
             return blocked("Insufficient candles")
         data = candles.copy(deep=True)
         values = data["timestamp"].astype(str)
-        if not values.str.contains(r"(?:Z|[+-]\\d{2}:\\d{2})$", regex=True).all():
+        if not values.str.contains(r"(?:Z|[+-]\d{2}:\d{2})$", regex=True).all():
             # In-memory timezone-aware Timestamp values also produce offsets.
             return blocked("Timestamps must include timezone offset")
         data["timestamp"] = pd.to_datetime(data["timestamp"], utc=True, errors="raise")
@@ -133,7 +133,7 @@ def record_forward_snapshot(path, evaluation, *, observed_at):
             tmp = Path(f.name)
             os.fchmod(f.fileno(), 0o600)
             for entry in entries + [item]:
-                f.write(json.dumps(entry, sort_keys=True) + "\\n")
+                f.write(json.dumps(entry, sort_keys=True) + "\n")
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)
