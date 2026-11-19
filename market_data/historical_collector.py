@@ -19,6 +19,7 @@ from market_data.twelve_data_client import (
 from config.market_config import create_research_config
 from market_data.api_credit_monitor import parse_credit_headers
 from market_data.unified_request_guard import authorize_request
+from market_data.probe_cross_path_gate import guard_production_fetch
 from market_data.credit_response_handler import refresh_credits_from_response
 from market_data.basic8_credit_policy import PROVIDER_RESERVE_CREDITS
 
@@ -78,6 +79,7 @@ def parse_historical_payload(payload, *, symbol, interval, start, end, now=None)
 
 
 
+@guard_production_fetch
 def _perform_historical_http_request(
     config, *, start, end, step, key, outputsize,
     session=None, provider_credit_path=None, now=None,
@@ -171,6 +173,7 @@ def _validate_historical_request(
     return start, end, now, step, key
 
 
+@guard_production_fetch
 def fetch_historical_candles(config, *, start, end, api_key=None,
                              state_path=STATE_PATH, now=None, session=None,
                              outputsize=MAX_HISTORY_BATCH,
@@ -265,6 +268,7 @@ def save_historical_csv(frame, path):
     return path
 
 
+@guard_production_fetch
 def fetch_bootstrap_historical_candles(
     config,
     *,
