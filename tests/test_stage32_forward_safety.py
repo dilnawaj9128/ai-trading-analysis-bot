@@ -11,9 +11,8 @@ NOW = datetime(2026, 11, 19, 14, 0, tzinfo=timezone.utc)
 
 
 def candles(now=NOW, n=100):
-    # Last candle opens 30 seconds before NOW: intentionally incomplete.
-    end = pd.Timestamp(now) - pd.Timedelta(seconds=30)
-    end = end.floor("min")
+    # Last candle opens at NOW: intentionally incomplete.
+    end = pd.Timestamp(now).floor("min")
     times = pd.date_range(end=end, periods=n, freq="min", tz="UTC")
     prices = [1.1 + i * 0.00001 for i in range(n)]
     return pd.DataFrame({
