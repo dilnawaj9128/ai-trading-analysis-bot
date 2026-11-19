@@ -50,6 +50,13 @@ def _sha256(path):
 
 
 def _default_fetch(params, api_key):
+    # Stage 52: disable unprotected network transport.
+    # Injected offline test fetchers remain supported.
+    raise RuntimeError(
+        "STAGE52_LEGACY_HTTP_BLOCKED: "
+        "Historical downloads require an authorized coordinator"
+    )
+
     request_params = dict(params)
     request_params["apikey"] = api_key
 
