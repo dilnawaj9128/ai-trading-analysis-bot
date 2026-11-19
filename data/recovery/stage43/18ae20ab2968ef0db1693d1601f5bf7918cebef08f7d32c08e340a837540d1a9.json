@@ -1,0 +1,78 @@
+{
+  "acquisition": {
+    "api_request_approved": false,
+    "blockers": [
+      "REVIEW_UNRESOLVED_ATTEMPT",
+      "VERIFY_PROVIDER_CREDITS"
+    ],
+    "status": "BLOCKED"
+  },
+  "analysis_only": true,
+  "api_requests_executed": 0,
+  "checked_at_utc": "2026-11-19T16:16:15.609907+00:00",
+  "execution_enabled": false,
+  "latest_probe_status": "UNCERTAIN",
+  "recovery_rules": {
+    "automatic_retry": false,
+    "claim_live_from_csv_hash": false,
+    "counter_reset": false,
+    "journal_reset": false,
+    "manual_status_promotion": false
+  },
+  "signal_validation": {
+    "blockers": [
+      "VERIFY_DATA_PROVENANCE",
+      "VERIFY_FEED_MODE",
+      "CHECK_BROKER_PARITY",
+      "RUN_INDEPENDENT_FORWARD_VALIDATION"
+    ],
+    "directional_signals_approved": false,
+    "status": "BLOCKED"
+  },
+  "source_readiness_stage": 42,
+  "stage": 43,
+  "steps": [
+    {
+      "action": "Inspect independent provider usage evidence for the latest attempt. Preserve the original journal. Do not automatically retry, relabel or reset it.",
+      "area": "ACQUISITION",
+      "code": "REVIEW_UNRESOLVED_ATTEMPT",
+      "status": "BLOCKED"
+    },
+    {
+      "action": "Local capacity exists. This does not establish provider balance or authorize an API request.",
+      "area": "ACQUISITION",
+      "code": "CHECK_LOCAL_BUDGET",
+      "status": "LOCAL_CAPACITY_ONLY"
+    },
+    {
+      "action": "Obtain a trustworthy current credit/usage statement through an approved, non-trading verification workflow. Do not assume stale counts are current.",
+      "area": "ACQUISITION",
+      "code": "VERIFY_PROVIDER_CREDITS",
+      "status": "BLOCKED"
+    },
+    {
+      "action": "Bind every completed candle dataset to a trustworthy provider response and retrieval timestamp.",
+      "area": "SIGNAL_VALIDATION",
+      "code": "VERIFY_DATA_PROVENANCE",
+      "status": "PENDING"
+    },
+    {
+      "action": "Use authoritative provider evidence to distinguish live, delayed and unknown feed modes. Never guess LIVE.",
+      "area": "SIGNAL_VALIDATION",
+      "code": "VERIFY_FEED_MODE",
+      "status": "PENDING"
+    },
+    {
+      "action": "Compare aligned timestamps and prices against the intended broker instrument before claiming broker signal performance. OTC and forex feeds may differ.",
+      "area": "SIGNAL_VALIDATION",
+      "code": "CHECK_BROKER_PARITY",
+      "status": "PENDING"
+    },
+    {
+      "action": "Collect enough new completed candles and independent expiry outcomes. Report uncertainty, sample size, payout assumptions and NO TRADE frequency.",
+      "area": "SIGNAL_VALIDATION",
+      "code": "RUN_INDEPENDENT_FORWARD_VALIDATION",
+      "status": "PENDING"
+    }
+  ]
+}

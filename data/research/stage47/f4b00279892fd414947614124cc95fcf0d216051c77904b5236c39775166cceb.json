@@ -1,0 +1,918 @@
+{
+  "analysis_only": true,
+  "api_requests_executed": 0,
+  "dataset_origin_verified": false,
+  "dataset_sha256": "92d48b2e1cea47b891b6b9df7b5b7f8871cb02051fb79f4ccbb62d694e40c6f8",
+  "directional_signals_authorized": false,
+  "execution_enabled": false,
+  "forward_accuracy_proven": false,
+  "limitations": [
+    "Only selected checkpoints and one perturbation tested",
+    "Does not audit third-party provider provenance",
+    "Does not establish live accuracy or profitability",
+    "Does not prove absence of every possible leakage path"
+  ],
+  "selection_checks": 4,
+  "selection_failures": 0,
+  "selection_results": [
+    {
+      "future_modified_selected": null,
+      "original_selected": null,
+      "passed": true,
+      "test_start": 720,
+      "training_score_mismatches": []
+    },
+    {
+      "future_modified_selected": "rsi",
+      "original_selected": "rsi",
+      "passed": true,
+      "test_start": 900,
+      "training_score_mismatches": []
+    },
+    {
+      "future_modified_selected": "rsi",
+      "original_selected": "rsi",
+      "passed": true,
+      "test_start": 1080,
+      "training_score_mismatches": []
+    },
+    {
+      "future_modified_selected": "rsi",
+      "original_selected": "rsi",
+      "passed": true,
+      "test_start": 1260,
+      "training_score_mismatches": []
+    }
+  ],
+  "signal_checks": 108,
+  "signal_failures": 0,
+  "signal_results": [
+    {
+      "checkpoint_index": 720,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 720,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 720,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 720,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend_rsi"
+    },
+    {
+      "checkpoint_index": 899,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 899,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 899,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 899,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend_rsi"
+    },
+    {
+      "checkpoint_index": 900,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 900,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 900,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 900,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend_rsi"
+    },
+    {
+      "checkpoint_index": 924,
+      "future_modified_signal": "DOWN",
+      "passed": true,
+      "prefix_only_signal": "DOWN",
+      "signal": "DOWN",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 924,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 924,
+      "future_modified_signal": "DOWN",
+      "passed": true,
+      "prefix_only_signal": "DOWN",
+      "signal": "DOWN",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 924,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend_rsi"
+    },
+    {
+      "checkpoint_index": 954,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 954,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 954,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 954,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "trend_rsi"
+    },
+    {
+      "checkpoint_index": 984,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 984,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 984,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 984,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend_rsi"
+    },
+    {
+      "checkpoint_index": 1000,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 1000,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 1000,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 1000,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "trend_rsi"
+    },
+    {
+      "checkpoint_index": 1016,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 1016,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 1016,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 1016,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "trend_rsi"
+    },
+    {
+      "checkpoint_index": 1049,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 1049,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 1049,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 1049,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "trend_rsi"
+    },
+    {
+      "checkpoint_index": 1079,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 1079,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 1079,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 1079,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend_rsi"
+    },
+    {
+      "checkpoint_index": 1080,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 1080,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 1080,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 1080,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend_rsi"
+    },
+    {
+      "checkpoint_index": 1084,
+      "future_modified_signal": "DOWN",
+      "passed": true,
+      "prefix_only_signal": "DOWN",
+      "signal": "DOWN",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 1084,
+      "future_modified_signal": "DOWN",
+      "passed": true,
+      "prefix_only_signal": "DOWN",
+      "signal": "DOWN",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 1084,
+      "future_modified_signal": "DOWN",
+      "passed": true,
+      "prefix_only_signal": "DOWN",
+      "signal": "DOWN",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 1084,
+      "future_modified_signal": "DOWN",
+      "passed": true,
+      "prefix_only_signal": "DOWN",
+      "signal": "DOWN",
+      "variant": "trend_rsi"
+    },
+    {
+      "checkpoint_index": 1110,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 1110,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 1110,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 1110,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend_rsi"
+    },
+    {
+      "checkpoint_index": 1130,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 1130,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 1130,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 1130,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "trend_rsi"
+    },
+    {
+      "checkpoint_index": 1172,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 1172,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 1172,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 1172,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend_rsi"
+    },
+    {
+      "checkpoint_index": 1194,
+      "future_modified_signal": "DOWN",
+      "passed": true,
+      "prefix_only_signal": "DOWN",
+      "signal": "DOWN",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 1194,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 1194,
+      "future_modified_signal": "DOWN",
+      "passed": true,
+      "prefix_only_signal": "DOWN",
+      "signal": "DOWN",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 1194,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend_rsi"
+    },
+    {
+      "checkpoint_index": 1216,
+      "future_modified_signal": "DOWN",
+      "passed": true,
+      "prefix_only_signal": "DOWN",
+      "signal": "DOWN",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 1216,
+      "future_modified_signal": "DOWN",
+      "passed": true,
+      "prefix_only_signal": "DOWN",
+      "signal": "DOWN",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 1216,
+      "future_modified_signal": "DOWN",
+      "passed": true,
+      "prefix_only_signal": "DOWN",
+      "signal": "DOWN",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 1216,
+      "future_modified_signal": "DOWN",
+      "passed": true,
+      "prefix_only_signal": "DOWN",
+      "signal": "DOWN",
+      "variant": "trend_rsi"
+    },
+    {
+      "checkpoint_index": 1259,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 1259,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 1259,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 1259,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend_rsi"
+    },
+    {
+      "checkpoint_index": 1260,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 1260,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 1260,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 1260,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend_rsi"
+    },
+    {
+      "checkpoint_index": 1262,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 1262,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 1262,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 1262,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend_rsi"
+    },
+    {
+      "checkpoint_index": 1282,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 1282,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 1282,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 1282,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "trend_rsi"
+    },
+    {
+      "checkpoint_index": 1301,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 1301,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 1301,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 1301,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "trend_rsi"
+    },
+    {
+      "checkpoint_index": 1317,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 1317,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 1317,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 1317,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "trend_rsi"
+    },
+    {
+      "checkpoint_index": 1345,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 1345,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 1345,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 1345,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "trend_rsi"
+    },
+    {
+      "checkpoint_index": 1375,
+      "future_modified_signal": "DOWN",
+      "passed": true,
+      "prefix_only_signal": "DOWN",
+      "signal": "DOWN",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 1375,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 1375,
+      "future_modified_signal": "DOWN",
+      "passed": true,
+      "prefix_only_signal": "DOWN",
+      "signal": "DOWN",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 1375,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend_rsi"
+    },
+    {
+      "checkpoint_index": 1394,
+      "future_modified_signal": "DOWN",
+      "passed": true,
+      "prefix_only_signal": "DOWN",
+      "signal": "DOWN",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 1394,
+      "future_modified_signal": "DOWN",
+      "passed": true,
+      "prefix_only_signal": "DOWN",
+      "signal": "DOWN",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 1394,
+      "future_modified_signal": "DOWN",
+      "passed": true,
+      "prefix_only_signal": "DOWN",
+      "signal": "DOWN",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 1394,
+      "future_modified_signal": "DOWN",
+      "passed": true,
+      "prefix_only_signal": "DOWN",
+      "signal": "DOWN",
+      "variant": "trend_rsi"
+    },
+    {
+      "checkpoint_index": 1415,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "baseline"
+    },
+    {
+      "checkpoint_index": 1415,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend"
+    },
+    {
+      "checkpoint_index": 1415,
+      "future_modified_signal": "UP",
+      "passed": true,
+      "prefix_only_signal": "UP",
+      "signal": "UP",
+      "variant": "rsi"
+    },
+    {
+      "checkpoint_index": 1415,
+      "future_modified_signal": "NO TRADE",
+      "passed": true,
+      "prefix_only_signal": "NO TRADE",
+      "signal": "NO TRADE",
+      "variant": "trend_rsi"
+    }
+  ],
+  "stage": 47,
+  "status": "CHECKPOINTS_PASSED",
+  "tested_future_perturbation": 0.01
+}

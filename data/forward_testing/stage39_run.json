@@ -1,0 +1,26 @@
+{
+  "analysis_only": true,
+  "execution_enabled": false,
+  "expiry_minutes": 15,
+  "frozen_at_utc": "2026-11-19T15:44:57.815067+00:00",
+  "minimum_resolved": 100,
+  "observations": [
+    {
+      "analysis_only": true,
+      "csv_sha256": "0f24490198dc25734833eaf8f019c7040e0df1360e592c7dd3276cb4b79bc502",
+      "execution_enabled": false,
+      "observed_at_utc": "2026-11-19T15:45:04.953909+00:00",
+      "outcome": "NOT_EVALUATED",
+      "provider_attested": false,
+      "reason": "Latest provider attempt unresolved",
+      "signal": "NO TRADE",
+      "status": "BLOCKED"
+    }
+  ],
+  "payout_assumption": 0.8,
+  "strategy": "rsi",
+  "strategy_status": "UNVALIDATED_RESEARCH",
+  "symbol": "EUR/USD",
+  "timeframe": "1min",
+  "version": 1
+}

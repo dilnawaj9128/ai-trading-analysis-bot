@@ -1,0 +1,1 @@
+{"age_seconds": null, "analysis_only": true, "execution_enabled": false, "expiry_minutes": 15, "observed_at_utc": "2026-11-19T15:04:10.144811+00:00", "outcome": "NOT_EVALUATED", "reason": "Feed mode or trusted provider provenance not verified", "signal": "NO TRADE", "status": "BLOCKED", "symbol": "EUR/USD", "timeframe": "1min"}

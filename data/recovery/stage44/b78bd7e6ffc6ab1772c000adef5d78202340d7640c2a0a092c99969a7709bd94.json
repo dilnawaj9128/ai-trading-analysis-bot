@@ -1,0 +1,22 @@
+{
+  "analysis_only": true,
+  "api_requests_executed": 0,
+  "comparison": {
+    "finding": "INCONCLUSIVE",
+    "independently_authenticated": false,
+    "request_failure_proven": false,
+    "request_success_proven": false,
+    "status": "EVIDENCE_NOT_PROVIDED"
+  },
+  "directional_analysis_authorized": false,
+  "execution_enabled": false,
+  "feed_mode": "UNKNOWN",
+  "journal_status_changed": false,
+  "latest_attempt_number": 5,
+  "latest_attempt_started_at": "2026-11-19T13:06:33.117551+00:00",
+  "latest_attempt_status": "UNCERTAIN",
+  "new_api_request_authorized": false,
+  "provider_request_resolved": false,
+  "reconciliation_status": "MANUAL_REVIEW_REQUIRED",
+  "stage": 44
+}

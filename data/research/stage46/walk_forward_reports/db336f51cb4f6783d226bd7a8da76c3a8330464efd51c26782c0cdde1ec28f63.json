@@ -1,0 +1,31 @@
+{
+  "analysis_only": true,
+  "api_requests_executed": 0,
+  "audit_type": "STAGE36_WALK_FORWARD",
+  "configuration": {
+    "expiry_minutes": 15,
+    "initial_train": 720,
+    "min_training_trades": 30,
+    "payout": 0.8,
+    "test_size": 180
+  },
+  "dataset_origin_verified": false,
+  "dataset_sha256": "92d48b2e1cea47b891b6b9df7b5b7f8871cb02051fb79f4ccbb62d694e40c6f8",
+  "errors": [],
+  "execution_enabled": false,
+  "forward_accuracy_proven": false,
+  "metrics": {
+    "break_even_win_rate_percent": 55.5556,
+    "folds": 4,
+    "losses": 11,
+    "max_drawdown_units": 4.6,
+    "net_units": -4.6,
+    "pushes": 1,
+    "resolved": 19,
+    "total_trades": 20,
+    "win_rate_percent": 42.1053,
+    "wins": 8
+  },
+  "stage": 46,
+  "status": "OFFLINE_RECONCILED"
+}

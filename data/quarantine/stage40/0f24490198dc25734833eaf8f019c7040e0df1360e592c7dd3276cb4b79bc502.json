@@ -1,0 +1,15 @@
+{
+  "analysis_only": true,
+  "archived_at_utc": "2026-11-19T15:56:06.254156+00:00",
+  "broker_parity_verified": false,
+  "bytes": 6948,
+  "directional_signals_allowed": false,
+  "execution_enabled": false,
+  "feed_mode_verified": false,
+  "probe_status_at_collection": "UNCERTAIN",
+  "provider_attested": false,
+  "sha256": "0f24490198dc25734833eaf8f019c7040e0df1360e592c7dd3276cb4b79bc502",
+  "source_type": "LOCAL_CSV",
+  "status": "QUARANTINED",
+  "version": 1
+}

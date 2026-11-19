@@ -1,0 +1,23 @@
+{
+  "analysis_only": true,
+  "api_requests_executed": 0,
+  "candles_sha256": "92d48b2e1cea47b891b6b9df7b5b7f8871cb02051fb79f4ccbb62d694e40c6f8",
+  "dataset_origin_verified": false,
+  "directional_signals_authorized": false,
+  "errors": [
+    "TRADE_LEDGER_NOT_PROVIDED"
+  ],
+  "execution_enabled": false,
+  "expiry_minutes": 15,
+  "feed_mode": "UNKNOWN",
+  "forward_accuracy_proven": false,
+  "holdout_first_close_utc": "2026-11-12T22:40:00+00:00",
+  "ledger_available": false,
+  "ledger_sha256": null,
+  "metrics": null,
+  "payout_assumption": 0.8,
+  "stage": 46,
+  "stake_per_trade_units": 1.0,
+  "status": "BLOCKED",
+  "training_last_close_utc": "2026-11-12T22:39:00+00:00"
+}

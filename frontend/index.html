@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>MarketLens | Research Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-icon">◈</span>
+        <div>
+          <strong>MarketLens</strong>
+          <small>AI Analysis Research</small>
+        </div>
+      </div>
+
+      <nav aria-label="Dashboard navigation">
+        <a href="#overview" class="nav-link active">◫ Overview</a>
+        <a href="#signals" class="nav-link">◎ Signal Analysis</a>
+        <a href="#performance" class="nav-link">▥ Performance</a>
+        <a href="#validation" class="nav-link">◇ Validation</a>
+      </nav>
+
+      <div class="sidebar-footer">
+        <span class="status-dot"></span>
+        Analysis-only environment
+        <small>Real trade execution disabled</small>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <div class="eyebrow">RESEARCH WORKSPACE / STAGE 49</div>
+          <h1>Market Overview</h1>
+          <p>Historical strategy research and safety monitoring</p>
+        </div>
+        <div class="top-actions">
+          <span id="connection" class="pill">Connecting...</span>
+          <button type="button" id="refresh">↻ Refresh</button>
+        </div>
+      </header>
+
+      <div id="error" class="error" role="alert" hidden></div>
+
+      <section id="overview" class="overview">
+        <article class="panel market-panel">
+          <div class="panel-head">
+            <span>MONITORED INSTRUMENT</span>
+            <span class="pill neutral">FOREX RESEARCH</span>
+          </div>
+          <div class="instrument">EUR/USD</div>
+          <div class="muted">Market data is not connected</div>
+
+          <div class="market-details">
+            <div>
+              <small>Feed mode</small>
+              <strong id="feed-mode">UNKNOWN</strong>
+            </div>
+            <div>
+              <small>Expiry setting</small>
+              <strong id="expiry">15 minutes</strong>
+            </div>
+          </div>
+          <div class="market-notice">
+            No live prices are available. This page does not
+            display simulated prices as live market data.
+          </div>
+        </article>
+
+        <article class="panel signal-panel" id="signals">
+          <div class="panel-head">
+            <span>STRATEGY SIGNAL</span>
+            <span id="signal-state" class="pill warning">BLOCKED</span>
+          </div>
+          <div class="signal-value" id="signal">NO TRADE</div>
+          <p class="muted">
+            Directional signals are disabled until independent
+            market-data and forward-validation requirements pass.
+          </p>
+          <div class="divider"></div>
+          <strong class="subhead">Why is analysis blocked?</strong>
+          <ul id="reasons" class="reasons">
+            <li>Loading safety checks...</li>
+          </ul>
+        </article>
+      </section>
+
+      <section id="performance" class="section">
+        <div class="section-head">
+          <div>
+            <h2>Historical Performance</h2>
+            <p>Offline walk-forward research. Not live performance.</p>
+          </div>
+          <span id="research-state" class="pill neutral">
+            Checking reports
+          </span>
+        </div>
+
+        <div class="metrics">
+          <article class="metric panel">
+            <small>Historical win rate</small>
+            <strong id="win-rate">—</strong>
+            <span class="muted" id="resolved">Awaiting reports</span>
+          </article>
+          <article class="metric panel">
+            <small>Net P/L</small>
+            <strong id="net-pnl">—</strong>
+            <span class="muted">Stake units, not currency</span>
+          </article>
+          <article class="metric panel">
+            <small>Total trades</small>
+            <strong id="trades">—</strong>
+            <span class="muted">Historical simulated outcomes</span>
+          </article>
+          <article class="metric panel">
+            <small>Maximum drawdown</small>
+            <strong id="drawdown">—</strong>
+            <span class="muted">Stake units</span>
+          </article>
+        </div>
+
+        <div class="analysis-grid">
+          <article class="panel">
+            <div class="panel-head">
+              <h3>Trade outcomes</h3>
+              <span class="muted">Historical</span>
+            </div>
+            <div class="outcome-bar" aria-label="Trade outcomes">
+              <span id="win-bar" class="bar-win"></span>
+              <span id="loss-bar" class="bar-loss"></span>
+              <span id="push-bar" class="bar-push"></span>
+            </div>
+            <div class="legend">
+              <span><i class="dot green"></i> Wins <b id="wins">—</b></span>
+              <span><i class="dot red"></i> Losses <b id="losses">—</b></span>
+              <span><i class="dot gray"></i> Pushes <b id="pushes">—</b></span>
+            </div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head"><h3>Strategy assessment</h3></div>
+            <div class="comparison">
+              <div><span>Observed win rate</span>
+                <strong id="observed">—</strong></div>
+              <div><span>Break-even win rate</span>
+                <strong id="break-even">—</strong></div>
+            </div>
+            <p class="assessment" id="assessment">
+              Waiting for verified offline reports.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section id="validation" class="section">
+        <div class="section-head">
+          <div>
+            <h2>Validation & Safety</h2>
+            <p>Independent audits and research restrictions</p>
+          </div>
+        </div>
+
+        <div class="validation-grid">
+          <article class="panel">
+            <div class="audit-row">
+              <div><h3>Stage 46</h3>
+                <p>Historical settlement reconciliation</p></div>
+              <span id="stage46" class="pill neutral">UNKNOWN</span>
+            </div>
+            <div class="divider"></div>
+            <div class="audit-row">
+              <div><h3>Stage 47</h3>
+                <p>Signal timing / look-ahead checkpoints</p></div>
+              <span id="stage47" class="pill neutral">UNKNOWN</span>
+            </div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head"><h3>Look-ahead checks</h3></div>
+            <div class="audit-number" id="signal-checks">—</div>
+            <p class="muted">Signal comparisons</p>
+            <div class="divider"></div>
+            <div class="comparison">
+              <div><span>Signal failures</span>
+                <strong id="signal-failures">—</strong></div>
+              <div><span>Selection failures</span>
+                <strong id="selection-failures">—</strong></div>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <footer class="footer">
+        <span>MarketLens · Local research dashboard</span>
+        <span>Provider unverified · No broker orders · No live signals</span>
+      </footer>
+    </main>
+  </div>
+</body>
+</html>
