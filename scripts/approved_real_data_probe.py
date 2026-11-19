@@ -5,6 +5,7 @@ snapshot is stale. Never changes existing authorization journal/ledger, never
 settles earlier uncertain requests, never trades, never retries automatically.
 """
 import argparse
+import hashlib
 import fcntl
 import json
 import os
@@ -153,6 +154,15 @@ def probe_once(*, approved, api_key=None, state_path=STATE,
                     os.replace(temp, csv_path)
                 finally:
                     temp.unlink(missing_ok=True)
+                # Bind the exact persisted CSV bytes to this validated request.
+                # Older journal records without this evidence remain untrusted.
+                attempt['csv_sha256'] = hashlib.sha256(csv_path.read_bytes()).hexdigest()
+                attempt['csv_path'] = str(csv_path.resolve())
+                attempt['provider'] = 'twelve_data'
+                attempt['symbol'] = 'EUR/USD'
+                attempt['timeframe'] = '1min'
+                attempt['candles'] = parsed['candles']
+                attempt['verified_at_utc'] = _utc().isoformat()
                 attempt['status'] = 'VERIFIED'
                 _atomic_write(state_path, history)
                 return {'status': 'VERIFIED', 'candles': parsed['candles'],
