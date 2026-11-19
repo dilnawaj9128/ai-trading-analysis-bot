@@ -17,6 +17,17 @@ _LEGACY_MOCKED_FETCH_TESTS = frozenset({
     "test_stage22j_live_failure.py",
     "test_stage22l_production_refresh.py",
     "test_twelve_data_client.py",
+    "test_bootstrap_historical_integration.py",
+    "test_credit_integration.py",
+    "test_guarded_historical_http.py",
+    "test_guarded_historical_http_errors.py",
+    "test_historical_authorization_safety.py",
+    "test_historical_http_integration.py",
+    "test_historical_transport_contract.py",
+    "test_http_reservation_lifecycle.py",
+    "test_invalid_candle_reservation.py",
+    "test_stage21u_historical_uncertain.py",
+    "test_structured_http_errors.py",
 })
 
 
