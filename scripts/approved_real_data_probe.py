@@ -54,6 +54,26 @@ def _atomic_write(path, data):
             temp.unlink(missing_ok=True)
 
 
+_CHECKPOINTS = frozenset({
+    "REQUEST_ATTEMPTED",
+    "RESPONSE_RECEIVED",
+    "HTTP_ACCEPTED",
+    "CANDLES_VALIDATED",
+    "CREDITS_REFRESHED",
+    "CSV_PERSISTED",
+})
+
+
+def _record_checkpoint(path, history, attempt, checkpoint):
+    """Durably record only safe lifecycle metadata."""
+    if checkpoint not in _CHECKPOINTS:
+        raise ValueError("Invalid probe checkpoint")
+
+    attempt["checkpoint"] = checkpoint
+    attempt["checkpoint_at_utc"] = _utc().isoformat()
+    _atomic_write(path, history)
+
+
 def _load(path):
     if not path.exists():
         return {'version': 1, 'attempts': []}
@@ -127,6 +147,9 @@ def probe_once(*, approved, api_key=None, state_path=STATE,
                 _atomic_write(state_path, history)
                 attempt['status'] = 'REQUEST_ATTEMPTED'
                 _atomic_write(state_path, history)
+                _record_checkpoint(
+                    state_path, history, attempt, "REQUEST_ATTEMPTED"
+                )
                 client = session if session is not None else requests
                 response = client.get(
                     td.API_URL,
@@ -135,16 +158,28 @@ def probe_once(*, approved, api_key=None, state_path=STATE,
                             'timezone': 'UTC', 'format': 'JSON'},
                     timeout=(CONNECT_TIMEOUT_SECONDS, READ_TIMEOUT_SECONDS), allow_redirects=False,
                 )
+                _record_checkpoint(
+                    state_path, history, attempt, "RESPONSE_RECEIVED"
+                )
                 response.raise_for_status()
                 if response.status_code != 200:
                     raise ValueError('Unexpected provider response status')
+                _record_checkpoint(
+                    state_path, history, attempt, "HTTP_ACCEPTED"
+                )
                 payload = response.json()
                 config = create_research_config('quotex', 'forex', 'EUR/USD', '1min', 15)
                 parsed = td.parse_candles(payload, config, now=_utc())
+                _record_checkpoint(
+                    state_path, history, attempt, "CANDLES_VALIDATED"
+                )
                 snapshot = refresh_credits_from_response(
                     response, path=provider_path, now=_utc())
                 if snapshot.updated is not True:
                     raise ValueError('Provider credit headers unavailable')
+                _record_checkpoint(
+                    state_path, history, attempt, "CREDITS_REFRESHED"
+                )
                 # Save validated completed candles only. A crash after response
                 # verification still leaves journal unresolved until this completes.
                 csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -158,12 +193,17 @@ def probe_once(*, approved, api_key=None, state_path=STATE,
                 # Older journal records without this evidence remain untrusted.
                 attempt['csv_sha256'] = hashlib.sha256(csv_path.read_bytes()).hexdigest()
                 attempt['csv_path'] = str(csv_path.resolve())
+                _record_checkpoint(
+                    state_path, history, attempt, "CSV_PERSISTED"
+                )
                 attempt['provider'] = 'twelve_data'
                 attempt['symbol'] = 'EUR/USD'
                 attempt['timeframe'] = '1min'
                 attempt['candles'] = parsed['candles']
                 attempt['verified_at_utc'] = _utc().isoformat()
                 attempt['status'] = 'VERIFIED'
+                attempt['checkpoint'] = 'VERIFIED'
+                attempt['checkpoint_at_utc'] = _utc().isoformat()
                 _atomic_write(state_path, history)
                 return {'status': 'VERIFIED', 'candles': parsed['candles'],
                         'latest_utc': parsed['latest_utc'], 'stale': parsed['stale'],
