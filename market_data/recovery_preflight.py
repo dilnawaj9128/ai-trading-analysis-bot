@@ -43,7 +43,7 @@ def _json(path):
     return data
 
 
-def evaluate_preflight(*, root, case_path, now=None):
+def evaluate_preflight(*, root, case_path, now=None, archive_path=None):
     """Evaluate evidence and quota without changing any files."""
     root = Path(root)
     now = now or datetime.now(timezone.utc)
@@ -61,11 +61,29 @@ def evaluate_preflight(*, root, case_path, now=None):
     ):
         raise RecoveryPreflightError("Invalid recovery case")
 
+    decision = case.get("decision")
+    if (
+        type(decision) is not dict
+        or decision.get("old_request_verified") is not False
+        or decision.get("new_api_request_authorized") is not False
+        or decision.get("retry_allowed") is not False
+    ):
+        raise RecoveryPreflightError("Recovery case authorization invalid")
+
     fingerprints = case.get("source_sha256")
     if type(fingerprints) is not dict:
         raise RecoveryPreflightError("Missing source fingerprints")
 
     evidence_matches = True
+
+    if archive_path is not None:
+        archive_path = Path(archive_path)
+        if archive_path.resolve() == (
+            root / SOURCE_FILES["provider"]
+        ).resolve():
+            raise RecoveryPreflightError(
+                "Historical archive must be separate"
+            )
 
     for name, filename in SOURCE_FILES.items():
         expected = fingerprints.get(name)
@@ -77,8 +95,13 @@ def evaluate_preflight(*, root, case_path, now=None):
         ):
             raise RecoveryPreflightError("Invalid evidence fingerprint")
 
+        source = (
+            archive_path
+            if name == "provider" and archive_path is not None
+            else root / filename
+        )
         try:
-            actual = sha256_file(root / filename)
+            actual = sha256_file(source)
         except OSError as exc:
             raise RecoveryPreflightError(
                 "Recovery source unavailable"

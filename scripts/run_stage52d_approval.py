@@ -20,6 +20,11 @@ APPROVAL = Path(
     "stage52d_new_request_approval.json"
 )
 
+ARCHIVE = Path(
+    "data/recovery_reports/"
+    "stage52d_historical_provider_credits.json"
+)
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -32,6 +37,7 @@ def main():
         result = prepare_offline_approval(
             root=ROOT,
             case_path=CASE,
+            archive_path=ARCHIVE,
             approval_path=APPROVAL,
             explicitly_approved=True,
         )
@@ -41,6 +47,7 @@ def main():
         result = claim_offline_approval(
             root=ROOT,
             case_path=CASE,
+            archive_path=ARCHIVE,
             approval_path=APPROVAL,
         )
         print("Offline approval claimed:", result["approval_id"])
@@ -49,6 +56,7 @@ def main():
         result = evaluate_preflight(
             root=ROOT,
             case_path=CASE,
+            archive_path=ARCHIVE,
         )
         print("=== STAGE 52D PART 4B STATUS ===")
         print("Preflight:", result["preflight"])

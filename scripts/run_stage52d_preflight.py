@@ -11,6 +11,10 @@ def main():
             "data/recovery_reports/"
             "stage52d_20261119_uncertain_case.json"
         ),
+        archive_path=Path(
+            "data/recovery_reports/"
+            "stage52d_historical_provider_credits.json"
+        ),
     )
 
     print("=== STAGE 52D PART 4A ===")

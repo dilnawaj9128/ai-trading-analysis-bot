@@ -82,11 +82,12 @@ def _lock(path):
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def _check_preflight(root, case_path, now):
+def _check_preflight(root, case_path, now, archive_path=None):
     result = evaluate_preflight(
         root=root,
         case_path=case_path,
         now=now,
+        archive_path=archive_path,
     )
 
     if result["preflight"] != "READY_FOR_APPROVAL_REVIEW":
@@ -105,6 +106,7 @@ def prepare_offline_approval(
     approval_path,
     explicitly_approved=False,
     now=None,
+    archive_path=None,
 ):
     """Prepare a one-time offline approval, with explicit consent."""
     if explicitly_approved is not True:
@@ -118,7 +120,7 @@ def prepare_offline_approval(
         if approval_path.exists():
             raise RecoveryApprovalBlocked("Approval already prepared")
 
-        _check_preflight(root, case_path, now)
+        _check_preflight(root, case_path, now, archive_path)
 
         payload = {
             "version": 1,
@@ -145,6 +147,7 @@ def claim_offline_approval(
     case_path,
     approval_path,
     now=None,
+    archive_path=None,
 ):
     """Claim once. No network execution or automatic budget reservation."""
     now = _utc(now)
@@ -198,7 +201,7 @@ def claim_offline_approval(
             raise RecoveryApprovalBlocked("Invalid approval ID")
 
         # Recheck evidence, provider credits and budget at claim time.
-        _check_preflight(root, case_path, now)
+        _check_preflight(root, case_path, now, archive_path)
 
         marker = {
             "version": 1,
