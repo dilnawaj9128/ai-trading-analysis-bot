@@ -40,3 +40,25 @@ venv/
 
 # Generated research outputs
 /reports/
+
+# Python
+venv/
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+
+# Secrets
+.env
+.env.*
+!.env.example
+*credentials*.json
+*secret*.json
+*.pem
+*.key
+
+# Local databases and provider research data
+*.db
+*.sqlite
+*.sqlite3
+data/
