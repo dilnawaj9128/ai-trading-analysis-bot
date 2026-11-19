@@ -1,10 +1,11 @@
+from market_data.basic8_credit_policy import PROVIDER_RESERVE_CREDITS
 """Read-only market data readiness report. No HTTP requests."""
 
 from datetime import datetime, timezone
 
 from market_data.provider_credit_state import load_credit_state
 from market_data.pre_request_credit_gate import check_before_request
-from market_data.provider_credit_guard import ProviderCreditStatusUnknown
+from market_data.provider_credit_guard import ProviderCreditStatusUnknown, ProviderCreditLimitReached
 
 
 def main():
@@ -28,11 +29,17 @@ def main():
         decision = check_before_request(
             now=now,
             required_credits=1,
-            reserve_credits=20,
+            reserve_credits=PROVIDER_RESERVE_CREDITS,
         )
     except ProviderCreditStatusUnknown:
         print("Live fetching: BLOCKED")
         print("Reason: Provider credit status unknown")
+        print("Signal: NO TRADE")
+        return
+    except ProviderCreditLimitReached:
+        print("Live fetching: BLOCKED")
+        print("Reason: Insufficient credits above configured reserve")
+        print("Signal: NO TRADE")
         return
 
     if decision.allowed:

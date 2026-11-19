@@ -9,6 +9,7 @@ Safety:
 """
 
 from __future__ import annotations
+from market_data.probe_cross_path_gate import guard_production_fetch
 
 import fcntl
 import json
@@ -308,6 +309,7 @@ def parse_candles(payload, config, now=None):
     }
 
 
+@guard_production_fetch
 def fetch_recent_candles(
     config: ResearchConfig,
     *,

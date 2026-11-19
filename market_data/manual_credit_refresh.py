@@ -2,6 +2,7 @@
 
 Does not run automatically. No broker or trading execution.
 """
+from market_data.probe_cross_path_gate import guard_production_fetch
 
 import json
 import os
@@ -258,6 +259,7 @@ def prepare_and_record_refresh_offline(
     }
 
 
+@guard_production_fetch
 def refresh_production_provider_credits(
     *,
     approval_id,
@@ -335,6 +337,23 @@ def refresh_production_provider_credits(
             "Fresh provider snapshot already available"
         )
 
+    # Reject ambiguous prior authorization, exhausted local quotas,
+    # corrupt state, or existing one-time claims before mutation.
+    preflight = inspect_production_credit_refresh(
+        provider_path=provider,
+        budget_path=budget,
+        approval_path=approval,
+        lifecycle_path=lifecycle,
+        execution_path=execution,
+        now=now,
+        api_key_present=True,
+    )
+    if not preflight["ready_for_one_approved_request"]:
+        raise ManualRefreshBlocked(
+            "Credit refresh preflight blocked: "
+            + "; ".join(preflight["reasons"])
+        )
+
     # Approval claim and consumption marker are persistent.
     prepared = prepare_manual_refresh(
         approval_id=approval_id,
@@ -376,9 +395,12 @@ def refresh_production_provider_credits(
                 "format": "JSON",
             },
             timeout=td.TIMEOUT_SECONDS,
+            allow_redirects=False,
         )
 
         response.raise_for_status()
+        if response.status_code != 200:
+            raise ValueError("Unexpected provider HTTP status")
 
         payload = response.json()
         if (
@@ -432,4 +454,92 @@ def refresh_production_provider_credits(
         "retry_allowed": False,
         "settlement_authorized": False,
         "trading_enabled": False,
+    }
+
+
+def inspect_production_credit_refresh(
+    *,
+    provider_path=DEFAULT_PATH,
+    budget_path=STATE_PATH,
+    approval_path="data/api_usage/credit_refresh_claim.json",
+    lifecycle_path="data/api_usage/credit_refresh_lifecycle.json",
+    execution_path="data/api_usage/credit_refresh_execution.json",
+    now=None,
+    api_key_present=False,
+):
+    """Read-only preflight. Never treats stale state as authorized.
+
+    The result is advisory; live execution rechecks this immediately
+    before durable claims and remains subject to concurrent state changes.
+    """
+    from market_data import twelve_data_client as td
+
+    current = now or datetime.now(timezone.utc)
+    if not isinstance(current, datetime) or current.tzinfo is None:
+        raise ValueError("Timezone-aware datetime required")
+    current = current.astimezone(timezone.utc)
+
+    provider = Path(provider_path)
+    budget = Path(budget_path)
+    approval = Path(approval_path)
+    lifecycle = Path(lifecycle_path)
+    execution = Path(execution_path)
+    marker = approval.with_name(approval.name + ".consumed")
+
+    tracked = [
+        provider, budget, approval, lifecycle, execution, marker,
+        provider.with_name(provider.name + ".lock"),
+        budget.with_name(budget.name + ".lock"),
+        lifecycle.with_name(lifecycle.name + ".lock"),
+        execution.with_name(execution.name + ".lock"),
+    ]
+    reasons = []
+    if len({x.resolve() for x in tracked}) != len(tracked):
+        reasons.append("Overlapping state paths")
+
+    history_files = [
+        provider.with_name(provider.name + ".authorization_journal.json"),
+        provider.with_name(provider.name + ".reservations.json"),
+        provider.with_name(provider.name + ".authorization_history.json"),
+        provider.with_name(provider.name + ".recovery_required.json"),
+    ]
+    if any(p.exists() for p in history_files):
+        reasons.append("Existing authorization/recovery evidence: manual review required")
+    if any(p.exists() for p in (approval, lifecycle, execution, marker)):
+        reasons.append("Refresh was already prepared or attempted: no automatic retry")
+
+    try:
+        snapshot = load_credit_state(path=provider, now=current)
+    except (ValueError, OSError):
+        reasons.append("Provider credit state invalid: manual review required")
+    else:
+        if snapshot is not None:
+            reasons.append("Provider snapshot already fresh")
+
+    try:
+        if budget.exists():
+            state = json.loads(budget.read_text(encoding="utf-8"))
+            if type(state) is not dict:
+                raise ValueError("Invalid budget state")
+            minute = current.strftime("%Y-%m-%dT%H:%MZ")
+            day = current.strftime("%Y-%m-%d")
+            minute_used = state.get("minute_used", 0) if state.get("minute") == minute else 0
+            day_used = state.get("day_used", 0) if state.get("day") == day else 0
+            if any(type(x) is not int or x < 0 for x in (minute_used, day_used)):
+                raise ValueError("Invalid budget counters")
+            if minute_used + td.RESERVE_PER_REQUEST > td.MINUTE_LIMIT:
+                reasons.append("Local minute budget exhausted")
+            if day_used + td.RESERVE_PER_REQUEST > td.DAY_LIMIT:
+                reasons.append("Local daily budget exhausted")
+    except (OSError, ValueError, TypeError):
+        reasons.append("Local budget unreadable or invalid")
+
+    if api_key_present is not True:
+        reasons.append("Twelve Data API key is not configured")
+
+    return {
+        "ready_for_one_approved_request": not reasons,
+        "reasons": reasons,
+        "live_fetch_authorized": False,
+        "request_executed": False,
     }

@@ -1,4 +1,5 @@
 """Authorized Twelve Data live research fetch. No broker execution."""
+from market_data.probe_cross_path_gate import guard_production_fetch
 
 import os
 from datetime import timezone
@@ -14,6 +15,7 @@ from market_data.unified_request_guard import authorize_request
 from market_data.basic8_credit_policy import PROVIDER_RESERVE_CREDITS
 
 
+@guard_production_fetch
 def fetch_authorized_live_candles(
     config,
     *,
