@@ -318,56 +318,19 @@ def fetch_recent_candles(
     now=None,
     session=None,
 ):
-    """Fetch recent candles with budget reservation first."""
+    """Compatibility wrapper: all HTTP uses unified authorization.
 
-    # Revalidate even if caller constructs a dataclass directly.
-    validated = create_research_config(
-        config.platform,
-        config.market,
-        config.symbol,
-        config.timeframe,
-        config.expiry_minutes,
+    Preserve existing callers but never use the legacy budget-only
+    request transport.
+    """
+    from market_data.authorized_live_fetch import (
+        fetch_authorized_live_candles,
     )
 
-    if config != validated:
-        raise MarketDataError("Unsafe or modified research config")
-
-    key = (
-        api_key
-        if api_key is not None
-        else os.environ.get("TWELVE_DATA_API_KEY")
+    return fetch_authorized_live_candles(
+        config,
+        api_key=api_key,
+        state_path=state_path,
+        now=now,
+        session=session,
     )
-    if not key:
-        raise MarketDataError("TWELVE_DATA_API_KEY is missing")
-
-    now = now or utc_now()
-    if now.tzinfo is None:
-        raise MarketDataError("Current time must have a timezone")
-    now = now.astimezone(timezone.utc)
-
-    reserve_request(state_path, now=now)
-
-    client = session if session is not None else requests
-
-    try:
-        response = client.get(
-            API_URL,
-            params={
-                "symbol": config.symbol,
-                "interval": config.timeframe,
-                "outputsize": MAX_CANDLES,
-                "timezone": "UTC",
-                "apikey": key,
-                "format": "JSON",
-            },
-            timeout=TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except (requests.RequestException, ValueError) as exc:
-        raise MarketDataError(
-            "Twelve Data request failed or returned invalid JSON"
-        ) from exc
-
-    return parse_candles(payload, config, now=now)
-

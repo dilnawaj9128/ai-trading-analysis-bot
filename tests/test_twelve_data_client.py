@@ -195,29 +195,40 @@ def test_modified_config_rejected(tmp_path):
 
 
 def test_mocked_request(tmp_path):
-    class FakeResponse:
-        def raise_for_status(self):
-            pass
+    """Legacy caller must delegate to authorized transport."""
+    from unittest.mock import patch
 
-        def json(self):
-            return payload()
+    expected = {
+        "candles": 2,
+        "analysis_only": True,
+        "execution_enabled": False,
+    }
 
-    class FakeSession:
-        def get(self, url, params, timeout):
-            assert url == td.API_URL
-            assert params["timezone"] == "UTC"
-            assert params["symbol"] == "EUR/USD"
-            assert timeout == 15
-            return FakeResponse()
+    class NoNetwork:
+        def get(self, *args, **kwargs):
+            raise AssertionError("Legacy HTTP must not execute")
 
-    result = td.fetch_recent_candles(
+    session = NoNetwork()
+    budget = tmp_path / "budget.json"
+
+    with patch(
+        "market_data.authorized_live_fetch.fetch_authorized_live_candles",
+        return_value=expected,
+    ) as authorized:
+        result = td.fetch_recent_candles(
+            config(),
+            api_key="fake-test-key",
+            state_path=budget,
+            now=NOW,
+            session=session,
+        )
+
+    assert result == expected
+    authorized.assert_called_once_with(
         config(),
         api_key="fake-test-key",
-        state_path=tmp_path / "budget.json",
+        state_path=budget,
         now=NOW,
-        session=FakeSession(),
+        session=session,
     )
-
-    assert result["candles"] == 2
-    assert result["analysis_only"] is True
-
+    assert not budget.exists()
