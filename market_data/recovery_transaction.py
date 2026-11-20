@@ -53,7 +53,7 @@ def _exclusive_json(path, payload):
 def reserve_offline_recovery(
     *, provider_path, budget_path, claim_path, case_path,
     archive_path, old_probe_path, explicitly_approved=False,
-    now=None, reserve_credits=1,
+    now=None, reserve_credits=1, authorize_transport=False,
 ):
     """Reserve exactly one *local* request credit, never send HTTP.
 
@@ -62,7 +62,9 @@ def reserve_offline_recovery(
     """
     if explicitly_approved is not True:
         raise RecoveryTransactionBlocked("Explicit offline reservation approval required")
-    if type(reserve_credits) is not int or reserve_credits < 1:
+    if type(authorize_transport) is not bool:
+        raise RecoveryTransactionBlocked("Invalid transport authorization")
+    if type(reserve_credits) is not int or reserve_credits != 1:
         raise RecoveryTransactionBlocked("Invalid reserve policy")
 
     now = now or datetime.now(timezone.utc)
@@ -167,7 +169,7 @@ def reserve_offline_recovery(
                 "status": "OFFLINE_INTENT", "created_at_utc": created_at,
                 "case_sha256": hashlib.sha256(case_path.read_bytes()).hexdigest(),
                 "old_probe_sha256": hashlib.sha256(old_probe_path.read_bytes()).hexdigest(),
-                "credits": 1, "http_authorized": False,
+                "credits": 1, "http_authorized": authorize_transport,
                 "retry_authorized": False, "trading_enabled": False,
             }
             # Durable claim before any irreversible budget mutation.
@@ -192,7 +194,7 @@ def reserve_offline_recovery(
                 "request_id": request_id,
                 "local_budget_reserved": True,
                 "outstanding_reserved_credits": ledger["reserved"],
-                "http_authorized": False,
+                "http_authorized": authorize_transport,
                 "retry_authorized": False,
                 "trading_enabled": False,
                 "old_probe_unchanged": True,
