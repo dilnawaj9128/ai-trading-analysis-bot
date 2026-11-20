@@ -42,6 +42,12 @@ def check_probe_state(path=None):
             if started.tzinfo is None or started.astimezone(timezone.utc) > datetime.now(timezone.utc):
                 raise ValueError("Invalid attempt timestamp")
         if attempts and attempts[-1]["status"] != "VERIFIED":
+            # A separately VERIFIED recovery can allow future fetches
+            # without falsely verifying the old historical request.
+            # Independent credit and budget authorization still applies.
+            from market_data.recovery_verified_gate import verified_recovery_override
+            if verified_recovery_override(path):
+                return "RECOVERY_VERIFIED_OLD_UNCERTAIN"
             raise CrossPathProbeBlocked(
                 "Last research probe attempt unresolved; legacy fetch blocked"
             )
