@@ -78,8 +78,10 @@ def recover_once(
                 provider_path=provider_path, budget_path=budget_path,
                 claim_path=claim_path, case_path=case_path,
                 archive_path=archive_path, old_probe_path=old_probe_path,
-                explicitly_approved=True, now=now,
+                explicitly_approved=True, now=now, authorize_transport=True,
             )
+            if receipt.get("http_authorized") is not True:
+                raise RecoveryTransportBlocked("Recovery transport not durably authorized")
             request_id = receipt["request_id"]
             journal = {
                 "version": 1,
