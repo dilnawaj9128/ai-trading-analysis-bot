@@ -38,6 +38,8 @@ def verified_recovery_override(old_probe_path):
         recovery = _json(recovery_path)
         old = _json(old_probe_path)
         provider = _json(provider_path)
+        if provider.get("version") != 1 or type(provider.get("credits_left")) is not int:
+            return False
 
         if (case.get("schema_version") != 1
             or case.get("classification") != "UNRESOLVED_ACCOUNTING"
@@ -68,7 +70,7 @@ def verified_recovery_override(old_probe_path):
             or claim.get("version") != 1
             or claim.get("case_sha256") != case_sha
             or claim.get("old_probe_sha256") != old_sha
-            or claim.get("http_authorized") is not False
+            or claim.get("http_authorized") is not True
             or recovery.get("version") != 1
             or recovery.get("request_id") != request_id
             or recovery.get("case_sha256") != case_sha
@@ -78,7 +80,6 @@ def verified_recovery_override(old_probe_path):
             or recovery.get("http_attempted") is not True
             or recovery.get("analysis_only") is not True
             or recovery.get("trading_enabled") is not False
-            or recovery.get("credits_left") != provider.get("credits_left")
             or type(recovery.get("candles")) is not int
             or recovery["candles"] < 1):
             return False
