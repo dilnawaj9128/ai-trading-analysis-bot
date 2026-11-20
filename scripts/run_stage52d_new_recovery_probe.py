@@ -1,3 +1,4 @@
+from market_data.recovery_authorization import check_recovery_accounting
 """Explicit one-shot recovery research probe.
 
 Preserves historical UNCERTAIN journal.
@@ -127,6 +128,7 @@ def run(approved):
                 raise ProbeBlocked("Original probe lock changed")
 
             verify_history()
+            check_recovery_accounting(PROVIDER)
 
             # Claim persists even if the process crashes afterward.
             create_claim()
