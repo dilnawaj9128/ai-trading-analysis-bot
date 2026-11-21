@@ -151,7 +151,7 @@ except (OSError, ValueError, sqlite3.Error) as exc:
 if delivery_history:
     st.dataframe(
         pd.DataFrame(delivery_history),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 else:
@@ -208,7 +208,7 @@ else:
 
     st.dataframe(
         frame,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 

@@ -2,6 +2,9 @@
 """Manual-refresh Twelve Data market monitor."""
 
 import os
+from pathlib import Path
+from dotenv import load_dotenv
+from market_data.provider_credit_guard import ProviderCreditStatusUnknown, ProviderCreditLimitReached
 
 import plotly.graph_objects as go
 import streamlit as st
@@ -74,6 +77,7 @@ st.caption(
     "Automatic refresh is NOT enabled."
 )
 
+load_dotenv(dotenv_path=Path.cwd() / ".env", override=False)
 if not os.environ.get("TWELVE_DATA_API_KEY"):
     st.error(
         "TWELVE_DATA_API_KEY is missing. "
@@ -85,6 +89,8 @@ if st.button("Fetch recent market candles", type="primary"):
     with st.spinner("Fetching Twelve Data candles..."):
         try:
             result = fetch_authorized_live_candles(config)
+        except (ProviderCreditStatusUnknown, ProviderCreditLimitReached):
+            st.warning("Provider credit snapshot is stale or insufficient. Use the verified one-shot renewal in Live Market Analysis before manually retrying. No automatic retry occurred.")
         except BudgetExceeded as exc:
             st.error(f"API budget guard: {exc}")
         except MarketDataError as exc:

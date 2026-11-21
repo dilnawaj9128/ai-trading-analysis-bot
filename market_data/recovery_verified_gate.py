@@ -98,9 +98,19 @@ def verified_recovery_override(old_probe_path):
         if (type(tx) is not dict or tx.get("status") != "FINALIZED"
             or tx.get("credits") != 1 or type(reservation) is not dict
             or reservation.get("credits") != 1
-            or reservation.get("status") != "PENDING"
-            or ledger["reserved"] < 1):
+            or reservation.get("status") not in ("PENDING", "SETTLED")):
             return False
+        if reservation["status"] == "PENDING":
+            if ledger["reserved"] < 1:
+                return False
+        else:
+            # A reconciled recovery is still valid ONLY if the original
+            # request-bound verified evidence has an immutable settlement receipt.
+            from market_data.verified_reservation_settlement import (
+                valid_recovery_settlement_receipt,
+            )
+            if not valid_recovery_settlement_receipt(provider_path, request_id, recovery):
+                return False
 
         return True
     except (OSError, ValueError, TypeError, KeyError, OverflowError):

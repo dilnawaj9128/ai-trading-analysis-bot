@@ -10,6 +10,8 @@ from market_data.probe_cross_path_gate import (
 from market_data.recovery_verified_gate import verified_recovery_override
 from market_data.recovery_transport import recover_once
 
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_stage52d_recovery_transport import setup as recovery_setup, FakeSession, MockResponse
 
 
