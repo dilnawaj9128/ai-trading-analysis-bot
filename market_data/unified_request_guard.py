@@ -26,6 +26,7 @@ from market_data.pre_request_credit_gate import check_before_request
 from market_data.provider_credit_guard import ProviderCreditLimitReached
 from market_data.provider_credit_state import DEFAULT_PATH
 from market_data.twelve_data_client import STATE_PATH, reserve_request
+from market_data.minute_reservation_headroom import minute_pending_credits
 
 
 @dataclass(frozen=True)
@@ -372,8 +373,15 @@ def authorize_request(
                         "missing from journal"
                     )
 
+            # Provider credit headers describe this minute. Older outstanding
+            # requests stay in the durable ledger, but are not charged against
+            # the new minute's independently enforced quota.
+            observed = datetime.fromisoformat(
+                json.loads(provider_path.read_text(encoding="utf-8"))["observed_at"]
+            )
             available = (
-                decision.remaining_credits - ledger["reserved"]
+                decision.remaining_credits
+                - minute_pending_credits(ledger, now=now, observed_at=observed)
             )
 
             if available < required_credits + reserve_credits:
