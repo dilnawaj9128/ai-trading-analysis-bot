@@ -66,7 +66,13 @@ def test_research_analysis_no_trade(tmp_path):
     repo = CandleRepository(path)
     populate(repo)
 
-    result = analyze_stored_candles(path)
+    result = analyze_stored_candles(
+        path,
+        now=datetime(
+            2026, 11, 22, 11, 10,
+            tzinfo=timezone.utc,
+        ),
+    )
 
     assert result["signal"] == "NO TRADE"
     assert result["analysis_only"] is True

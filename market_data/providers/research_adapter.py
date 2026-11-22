@@ -3,6 +3,7 @@
 import pandas as pd
 
 from analysis.live_engine import analyze_live_candles
+from market_data.providers.data_quality_gate import validate_live_frame
 from market_data.providers.candle_repository import CandleRepository
 
 
@@ -63,18 +64,22 @@ def analyze_stored_candles(
     *,
     source="SIMULATED",
     symbol="EURUSD_otc",
+    now=None,
 ):
     frame = load_candle_frame(
         db_path, source=source, symbol=symbol
     )
 
-    result = analyze_live_candles(frame)
+    quality = validate_live_frame(frame, now=now)
+    result = analyze_live_candles(quality["frame"])
 
     return {
         "status": "RESEARCH_ONLY",
         "source": source,
         "symbol": symbol,
-        "candles": len(frame),
+        "candles": quality["candles"],
+        "age_seconds": quality["age_seconds"],
+        "data_quality": quality["quality"],
         "observations": result["observations"],
         "signal": "NO TRADE",
         "feed_verified": False,
