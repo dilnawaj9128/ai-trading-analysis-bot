@@ -234,6 +234,10 @@ def bootstrap_account_usage_once(
                             last_at = _now(datetime.fromisoformat(last["observed_at"]))
                             if last_at > response_time:
                                 raise AccountUsageBootstrapBlocked("Newer provider observation exists")
+                        # Provider snapshot is persisted first. If a crash
+                        # occurs before the VERIFIED journal checkpoint, the
+                        # durable request remains uncertain, never retried.
+                        save_credit_state(snapshot, path=provider, now=response_time)
                         entry.update({
                             "status": "VERIFIED",
                             "verified_at_utc": response_time.isoformat(),
@@ -241,7 +245,6 @@ def bootstrap_account_usage_once(
                             "credits_used": snapshot.credits_used,
                         })
                         _save_json_atomic(usage_log, log)
-                        save_credit_state(snapshot, path=provider, now=response_time)
                     finally:
                         fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
