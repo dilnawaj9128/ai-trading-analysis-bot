@@ -124,6 +124,43 @@ def offline_progress(*, journal=DEFAULT_JOURNAL, provider=DEFAULT_PROVIDER,
             "accuracy_verified": False}
 
 
+def _normalize_live_outcome(live):
+    """Normalize legacy successful capture payloads; never infer success on errors.
+
+    A verified research capture returns immutable path/hash/observation/expiry
+    but older versions omitted 'status'. This normalization is presentation-
+    only and does not touch provider accounting or observation evidence.
+    """
+    if type(live) is not dict:
+        return {"status": "UNEXPECTED_LIVE_RESULT", "provider_requests": "UNKNOWN_REVIEW_JOURNALS"}
+    live = dict(live)
+    status = live.get("status")
+    has_observation = all(
+        isinstance(live.get(k), str) and live[k]
+        for k in ("observation", "saved_csv", "source_sha256", "expiry_utc")
+    )
+    if status is None:
+        if has_observation:
+            status = "OBSERVATION_RECORDED"
+        else:
+            status = "UNEXPECTED_LIVE_RESULT"
+        live["status"] = status
+    if status in ("OBSERVATION_RECORDED", "CAPTURE_SAVED_OBSERVATION_DEFERRED"):
+        # The bounded runner made one successful data fetch. A second request
+        # is known only if that same runner recorded renewal_used=True.
+        if type(live.get("renewal_used")) is bool:
+            live["provider_requests"] = 1 + int(live["renewal_used"])
+        else:
+            live["provider_requests"] = "UNKNOWN_REVIEW_JOURNALS"
+    elif status in ("NOT_REQUESTED", "BLOCKED_NO_HTTP", "BLOCKED_MISSING_API_KEY"):
+        live["provider_requests"] = 0
+    else:
+        # A failed authorized attempt may already have reached the provider;
+        # NEVER state that a transport error used zero credits.
+        live["provider_requests"] = "UNKNOWN_REVIEW_JOURNALS"
+    return live
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--journal", type=Path, default=DEFAULT_JOURNAL)
@@ -158,13 +195,19 @@ def main(argv=None):
                             "exception_type": type(exc).__name__,
                             "possible_new_reservation": True,
                             "no_automatic_retry": True}
+    live = _normalize_live_outcome(live)
     report["live"] = live
+    # offline_progress() intentionally counts zero offline HTTP. Recompute the
+    # full invocation count after a possible live request instead of emitting
+    # the stale zero that was visible after a real successful capture.
+    report["new_provider_requests"] = live["provider_requests"]
     report["readiness_after"] = eligibility(
         provider=args.provider, journal=args.journal
     )
     print(json.dumps(report, indent=2, sort_keys=True, default=str))
     print("NO BROKER ORDERS / NO STRATEGY TUNING / NO SYNTHETIC OUTCOMES")
-    return 2 if live["status"] in ("BLOCKED_OR_FAILED", "BLOCKED_MISSING_API_KEY") else 0
+    return 2 if live["status"] in ("BLOCKED_OR_FAILED", "BLOCKED_MISSING_API_KEY",
+                                    "UNEXPECTED_LIVE_RESULT") else 0
 
 
 if __name__ == "__main__":
