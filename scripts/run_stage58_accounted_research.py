@@ -17,7 +17,7 @@ from market_data.provider_credit_state import load_credit_state
 from market_data.verified_reservation_settlement import reconcile_verified_historical
 
 
-def run_once(*, approved=False, api_key=None, analyze=False):
+def run_once(*, approved=False, api_key=None, analyze=False, save_csv=False):
     if approved is not True:
         raise ValueError("Explicit approval for up to two requests required")
     if not api_key:
@@ -51,6 +51,9 @@ def run_once(*, approved=False, api_key=None, analyze=False):
         "analysis_only": True,
         "trading_enabled": False,
     }
+    if save_csv:
+        from market_data.research_capture import save_verified_research_frame
+        report["capture"] = save_verified_research_frame(candles)
     if analyze:
         from market_data.live_analysis_bridge import analyze_fetched_candles
         report["analysis"] = analyze_fetched_candles(candles)
@@ -63,6 +66,8 @@ def main():
                         help="Consent to one usage check and one candle fetch (up to 2 credits)")
     parser.add_argument("--analyze", action="store_true",
                         help="Analyze fetched candles without an additional API request")
+    parser.add_argument("--save-csv", action="store_true",
+                        help="Persist the SAME fetched candles to immutable research CSV; no additional HTTP")
     args = parser.parse_args()
     if not args.approve_up_to_two_requests:
         print("PREVIEW: zero HTTP requests, zero writes, zero trades")
@@ -73,7 +78,7 @@ def main():
     try:
         result = run_once(
             approved=True, api_key=os.environ.get("TWELVE_DATA_API_KEY"),
-            analyze=args.analyze,
+            analyze=args.analyze, save_csv=args.save_csv,
         )
     except BaseException as exc:
         # Never print provider request exception bodies that could expose URLs.
