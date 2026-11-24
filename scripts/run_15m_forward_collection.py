@@ -25,6 +25,7 @@ def eligibility(*, provider=DEFAULT_PROVIDER, journal=DEFAULT_JOURNAL,
     )
     from market_data.provider_credit_state import load_credit_state
     from market_data.unified_request_guard import _load_ledger
+    from market_data.independent_usage_recovery import verified_independent_recovery
 
     if type(target) is not int or target < 30:
         raise ValueError("Research target must be at least 30")
@@ -48,6 +49,11 @@ def eligibility(*, provider=DEFAULT_PROVIDER, journal=DEFAULT_JOURNAL,
         "strategy_changed": False,
     }
     blockers = result["reasons"]
+    # A separate, authenticated current usage result can restore operational
+    # access without claiming historical uncertain requests were settled.
+    fresh_independent = verified_independent_recovery(provider_path=provider, now=now)
+    result["independent_current_usage_verified"] = fresh_independent
+    result["historical_uncertain_unchanged"] = True
     if nonpush >= target:
         result["status"] = "SAMPLE_TARGET_REACHED_NO_NEW_FETCH"
         blockers.append("RESEARCH_SAMPLE_TARGET_ALREADY_REACHED")
@@ -72,7 +78,7 @@ def eligibility(*, provider=DEFAULT_PROVIDER, journal=DEFAULT_JOURNAL,
                 for entry in ledger["requests"].values()
             )
             result["uncertain_requests"] = uncertain
-            if uncertain:
+            if uncertain and not fresh_independent:
                 blockers.append("UNCERTAIN_PROVIDER_REQUESTS_REQUIRE_RECONCILIATION")
     except (OSError, ValueError, TypeError, KeyError):
         blockers.append("RESERVATION_LEDGER_INVALID")
@@ -88,7 +94,7 @@ def eligibility(*, provider=DEFAULT_PROVIDER, journal=DEFAULT_JOURNAL,
                 if not isinstance(attempts, list):
                     raise ValueError("Invalid journal")
                 if any(not isinstance(a, dict) or a.get("status") != "VERIFIED"
-                       for a in attempts):
+                       for a in attempts) and not fresh_independent:
                     blockers.append(label + "_UNRESOLVED")
         except (OSError, ValueError, TypeError, KeyError):
             blockers.append(label + "_JOURNAL_INVALID")
