@@ -112,6 +112,17 @@ def test_one_bootstrap_updates_only_current_credit_evidence(prepared):
         prepared["provider_path"].with_name("provider_credits.json.reservations.json").read_text()
     )
     assert ledger["reserved"] == 1
+    # The fixture's evaluation time predates the just-persisted provider
+    # snapshot by a few milliseconds. Clock skew must block a repeat request.
+    with pytest.raises(AccountUsageBootstrapBlocked, match="newer than evaluation clock"):
+        bootstrap_account_usage_once(approved=True, session=session, **prepared)
+    assert session.calls == 1
+
+
+def test_same_snapshot_with_current_clock_blocks_duplicate(prepared):
+    session = FakeSession(response=FakeResponse(datetime.now(timezone.utc)))
+    bootstrap_account_usage_once(approved=True, session=session, **prepared)
+    prepared["now"] = datetime.now(timezone.utc)
     with pytest.raises(AccountUsageBootstrapBlocked, match="already fresh"):
         bootstrap_account_usage_once(approved=True, session=session, **prepared)
     assert session.calls == 1
