@@ -57,3 +57,30 @@ def test_live_missing_key_has_no_request(tmp_path):
                            one_live_fetch=True, api_key=None, smoke=False)
     assert report["task_1_forward_collection"]["bounded_live_attempt"]["status"] == "BLOCKED_API_KEY_MISSING"
     assert report["broker_orders"] == 0
+
+def test_failed_live_request_reports_post_attempt_reservations(tmp_path):
+    """A failed request may leave a new UNCERTAIN credit hold; never report stale 18."""
+    calls = iter([
+        {"outstanding_reserved": 18, "requests": []},
+        {"outstanding_reserved": 19,
+         "requests": [{"id_prefix": "8d67a0da52", "status": "UNCERTAIN",
+                       "classification": "UNRESOLVED_DO_NOT_RELEASE"}]},
+    ])
+    def fail_live(**kwargs):
+        raise ConnectionError("simulated transport failure")
+    with patch("scripts.run_three_in_one_verification._safe_reconcile",
+               return_value={"status": "RECONCILED"}), \
+         patch("scripts.run_three_in_one_verification.reservation_audit",
+               side_effect=lambda path: next(calls)), \
+         patch("scripts.run_three_in_one_verification.archive_settlement_pass",
+               return_value={}), \
+         patch("scripts.run_three_in_one_verification.prospective_scorecard",
+               return_value={"counts": {"WIN": 0, "LOSS": 0},
+                             "statistical_audit": {}}), \
+         patch("scripts.run_real_prediction_live_once.capture_live_once", fail_live):
+        report, _ = run(journal=tmp_path, output=tmp_path,
+                        one_live_fetch=True, api_key="fake", smoke=False)
+    credits = report["task_2_receipt_bound_credit_review"]
+    assert credits["read_only_reservation_evidence_before_attempt"]["outstanding_reserved"] == 18
+    assert credits["read_only_reservation_evidence"]["outstanding_reserved"] == 19
+    assert report["task_1_forward_collection"]["bounded_live_attempt"]["error_type"] == "ConnectionError"
