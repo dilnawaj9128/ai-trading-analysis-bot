@@ -127,3 +127,32 @@ def test_cli_reports_old_19_unresolved_and_new_verified_current_usage(tmp_path):
     assert output["before"]["reservations"] == 19
     assert output["after"]["reservations"] == 19
     assert output["old_pending_or_uncertain_not_manually_cleared"]
+
+
+def test_old_uncertain_held_while_new_usage_verifies(files):
+    provider, budget = files
+    root = provider.parent
+    old_rid = "a" * 32
+    prior = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+    ledger_path = provider.with_name("provider_credits.json.reservations.json")
+    ledger_path.write_text(json.dumps({
+        "version": 2, "reserved": 1, "legacy_reserved": 0,
+        "requests": {old_rid: {"status": "UNCERTAIN", "credits": 1,
+                               "authorized_at": prior,
+                               "snapshot_observed_at": prior}},
+    }))
+    provider.with_name("provider_credits.json.authorization_journal.json").write_text(
+        json.dumps({"version": 1, "transactions": {
+            old_rid: {"status": "FINALIZED", "credits": 1, "authorized_at": prior}
+        }})
+    )
+    session = FakeSession()
+    out = recover_once(approved=True, api_key="test", provider_path=provider,
+                       budget_path=budget, session=session)
+    assert out["status"] == "VERIFIED_NEW_USAGE_ONLY"
+    assert session.calls == 1
+    after = json.loads(ledger_path.read_text())
+    assert after["requests"][old_rid]["status"] == "UNCERTAIN"
+    assert after["reserved"] == 1
+    assert len(after["requests"]) == 2
+    assert verified_independent_recovery(provider_path=provider)
