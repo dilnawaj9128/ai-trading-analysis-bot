@@ -36,7 +36,7 @@ def _safe_reconcile():
     from market_data.verified_reservation_settlement import reconcile_verified_historical
     try:
         return reconcile_verified_historical()
-    except (OSError, ValueError, TypeError, KeyError) as exc:
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError) as exc:
         return {"status": "VERIFIED_RECONCILIATION_BLOCKED",
                 "error_type": type(exc).__name__,
                 "unsafe_reservations_not_released": True}
