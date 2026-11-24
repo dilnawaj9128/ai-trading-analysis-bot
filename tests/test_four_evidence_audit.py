@@ -69,7 +69,7 @@ def test_production_requires_https_and_nonlocal():
 
 
 def test_health_session_failure_is_not_misrepresented():
-    ticker = iter([0., 0.])
+    ticker = iter([0., 0., 0.])
     result = local_monitor(
         health_url="http://127.0.0.1:8000/api/health",
         duration_seconds=60, interval_seconds=30,
