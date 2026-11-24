@@ -164,6 +164,25 @@ def bootstrap_account_usage_once(
                     if recovery_marker.exists():
                         raise AccountUsageBootstrapBlocked("Authorization recovery marker unresolved")
                     check_recovery_accounting(provider)
+                    # A snapshot later than this operation's clock is NOT
+                    # expired data. Treat clock rollback/skew as a hard block:
+                    # never authorize another request from a negative age.
+                    if provider.exists():
+                        try:
+                            existing = json.loads(provider.read_text(encoding="utf-8"))
+                            if type(existing) is not dict or existing.get("version") != 1:
+                                raise ValueError("Invalid provider snapshot")
+                            observed = datetime.fromisoformat(existing["observed_at"])
+                            if observed.tzinfo is None or observed.utcoffset() is None:
+                                raise ValueError("Naive provider timestamp")
+                            if observed.astimezone(timezone.utc) > instant:
+                                raise AccountUsageBootstrapBlocked(
+                                    "Credit snapshot newer than evaluation clock; no request"
+                                )
+                        except (OSError, ValueError, TypeError, KeyError) as exc:
+                            raise AccountUsageBootstrapBlocked(
+                                "Provider credit evidence invalid; no request"
+                            ) from exc
                     if load_credit_state(path=provider, now=instant) is not None:
                         raise AccountUsageBootstrapBlocked("Credit snapshot already fresh")
                     log = _journal(usage_log)
