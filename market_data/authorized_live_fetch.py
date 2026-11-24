@@ -24,6 +24,7 @@ def fetch_authorized_live_candles(
     provider_credit_path=DEFAULT_PATH,
     now=None,
     session=None,
+    settle_verified=False,
 ):
     """Validate, authorize once, fetch once, and preserve reservation evidence."""
 
@@ -96,6 +97,19 @@ def fetch_authorized_live_candles(
                 "reservation retained"
             )
 
+        if settle_verified is True:
+            # Settlement uses only THIS request ID and the response metadata
+            # from this successful validated HTTP request. It never releases
+            # old UNCERTAIN or receipt-less reservations.
+            from market_data.verified_reservation_settlement import (
+                settle_verified_normal,
+            )
+            settle_verified_normal(
+                provider_path=provider_credit_path,
+                request_id=authorization.request_id,
+                credits_left=refresh.credits_left,
+                candles=result["candles"],
+            )
         return result
 
     except Exception as exc:
