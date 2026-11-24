@@ -71,3 +71,52 @@ def test_offline_summary_cannot_fabricate_outcomes(tmp_path):
     assert report["broker_orders"] == 0
     assert report["accuracy_verified"] is False
     assert report["readiness"]["observed_nonpush"] == 0
+
+
+def test_successful_legacy_capture_normalized_without_crashing():
+    from scripts.run_15m_forward_collection import _normalize_live_outcome
+    legacy = {
+        "observation": "data/research/prospective_accuracy/observations/abc.json",
+        "saved_csv": "data/research/prospective_accuracy/captures/abc.csv",
+        "source_sha256": "a" * 64,
+        "expiry_utc": "2026-11-24T17:00:00+00:00",
+        "research_hypothesis": "DOWN",
+        "renewal_used": False,
+        "live_signal": "NO TRADE",
+        "broker_orders": 0,
+    }
+    outcome = _normalize_live_outcome(legacy)
+    assert outcome["status"] == "OBSERVATION_RECORDED"
+    assert outcome["provider_requests"] == 1
+    assert outcome["research_hypothesis"] == "DOWN"
+    assert "status" not in legacy  # evidence not mutated
+
+
+def test_successful_capture_with_renewal_counts_two_requests():
+    from scripts.run_15m_forward_collection import _normalize_live_outcome
+    outcome = _normalize_live_outcome({
+        "observation": "observations/a.json", "saved_csv": "captures/a.csv",
+        "source_sha256": "b" * 64,
+        "expiry_utc": "2026-11-24T17:00:00+00:00",
+        "renewal_used": True,
+    })
+    assert outcome["status"] == "OBSERVATION_RECORDED"
+    assert outcome["provider_requests"] == 2
+
+
+def test_failed_http_does_not_falsely_count_zero():
+    from scripts.run_15m_forward_collection import _normalize_live_outcome
+    outcome = _normalize_live_outcome({
+        "status": "BLOCKED_OR_FAILED", "exception_type": "ConnectionError"
+    })
+    assert outcome["status"] == "BLOCKED_OR_FAILED"
+    assert outcome["provider_requests"] == "UNKNOWN_REVIEW_JOURNALS"
+
+
+def test_blocked_without_http_counts_zero():
+    from scripts.run_15m_forward_collection import _normalize_live_outcome
+    outcome = _normalize_live_outcome({
+        "status": "BLOCKED_NO_HTTP",
+        "reason": "15_MINUTE_NONOVERLAP_WINDOW",
+    })
+    assert outcome["provider_requests"] == 0
