@@ -61,5 +61,5 @@ def show_quick_links():
     ]
     for col, (label, target, detail) in zip(cols, links):
         with col:
-            st.page_link(target, label=label, use_container_width=True)
+            st.page_link(target, label=label, width="stretch")
             st.caption(detail)
