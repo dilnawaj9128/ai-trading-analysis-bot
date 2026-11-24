@@ -42,15 +42,20 @@ def _safe_reconcile():
                 "unsafe_reservations_not_released": True}
 
 
+def _safe_reservation_audit():
+    """Read-only snapshot; called before AND after an optional HTTP attempt."""
+    try:
+        return reservation_audit(Path(DEFAULT_PATH))
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        return {"status": "RESERVATION_EVIDENCE_AUDIT_BLOCKED",
+                "error_type": type(exc).__name__}
+
+
 def run(*, journal=JOURNAL, output=OUTPUT, one_live_fetch=False,
         api_key=None, smoke=True):
     # No new network unless this invocation was explicitly given the one-shot flag.
     credit_result = _safe_reconcile()
-    try:
-        reservations = reservation_audit(Path(DEFAULT_PATH))
-    except (OSError, ValueError, TypeError, KeyError) as exc:
-        reservations = {"status": "RESERVATION_EVIDENCE_AUDIT_BLOCKED",
-                        "error_type": type(exc).__name__}
+    reservations_before = _safe_reservation_audit()
     try:
         archived = archive_settlement_pass(journal)
     except (OSError, ValueError, TypeError, KeyError) as exc:
@@ -72,6 +77,9 @@ def run(*, journal=JOURNAL, output=OUTPUT, one_live_fetch=False,
                         "request_accounting_must_be_inspected_before_any_retry": True}
             # On successful capture, the existing capture runner handles prospective
             # observation and settlement before returning; do not send more HTTP.
+    # Re-read after a failed/uncertain request. Pre-attempt credit snapshots
+    # MUST NOT be shown as current: a transport exception may reserve a credit.
+    reservations_after = _safe_reservation_audit()
     try:
         prospective = prospective_scorecard(journal)
     except (OSError, ValueError, TypeError, KeyError) as exc:
@@ -97,7 +105,8 @@ def run(*, journal=JOURNAL, output=OUTPUT, one_live_fetch=False,
         },
         "task_2_receipt_bound_credit_review": {
             "verified_reconciliation": credit_result,
-            "read_only_reservation_evidence": reservations,
+            "read_only_reservation_evidence_before_attempt": reservations_before,
+            "read_only_reservation_evidence": reservations_after,
             "no_ledger_reset_or_unverified_release": True,
         },
         "task_3_local_deployment": deployment,
