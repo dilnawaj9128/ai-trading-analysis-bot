@@ -17,7 +17,7 @@ from market_data.provider_credit_state import load_credit_state
 from market_data.verified_reservation_settlement import reconcile_verified_historical
 
 
-def run_once(*, approved=False, api_key=None, analyze=False, save_csv=False):
+def run_once(*, approved=False, api_key=None, analyze=False, save_csv=False, verify_feed=False):
     if approved is not True:
         raise ValueError("Explicit approval for up to two requests required")
     if not api_key:
@@ -51,6 +51,9 @@ def run_once(*, approved=False, api_key=None, analyze=False, save_csv=False):
         "analysis_only": True,
         "trading_enabled": False,
     }
+    if verify_feed:
+        from market_data.regular_forex_feed_evidence import classify_authorized_fetch
+        report["feed_mode_evidence"] = classify_authorized_fetch(candles)
     if save_csv:
         from market_data.research_capture import save_verified_research_frame
         report["capture"] = save_verified_research_frame(candles)
@@ -68,6 +71,8 @@ def main():
                         help="Analyze fetched candles without an additional API request")
     parser.add_argument("--save-csv", action="store_true",
                         help="Persist the SAME fetched candles to immutable research CSV; no additional HTTP")
+    parser.add_argument("--verify-feed", action="store_true",
+                        help="Classify existing fetched data using official Twelve Data feed documentation; no extra HTTP")
     args = parser.parse_args()
     if not args.approve_up_to_two_requests:
         print("PREVIEW: zero HTTP requests, zero writes, zero trades")
@@ -78,7 +83,7 @@ def main():
     try:
         result = run_once(
             approved=True, api_key=os.environ.get("TWELVE_DATA_API_KEY"),
-            analyze=args.analyze, save_csv=args.save_csv,
+            analyze=args.analyze, save_csv=args.save_csv, verify_feed=args.verify_feed,
         )
     except BaseException as exc:
         # Never print provider request exception bodies that could expose URLs.
