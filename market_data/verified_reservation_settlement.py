@@ -114,6 +114,27 @@ def _proof_for_historical(provider, rid, kind):
         if verified_at.tzinfo is None or verified_at.utcoffset() is None:
             raise VerifiedSettlementBlocked('Invalid renewal timestamp')
         return _digest(a)
+    if kind == 'INDEPENDENT_USAGE_RECOVERY':
+        log = _read(provider.parent / 'independent_usage_recovery.json')
+        if log.get('version') != 1 or type(log.get('attempts')) is not list:
+            raise VerifiedSettlementBlocked('Invalid independent usage journal')
+        matches = [e for e in log['attempts'] if type(e) is dict and e.get('request_id') == rid]
+        if len(matches) != 1:
+            raise VerifiedSettlementBlocked('Ambiguous independent usage record')
+        record = matches[0]
+        if (record.get('status') != 'VERIFIED'
+            or record.get('http_attempted') is not True
+            or record.get('endpoint') != 'api_usage'
+            or type(record.get('credits_left')) is not int
+            or record['credits_left'] < 0
+            or type(record.get('credits_used')) is not int
+            or record['credits_used'] < 0
+            or type(record.get('verified_at_utc')) is not str):
+            raise VerifiedSettlementBlocked('No verified independent usage receipt')
+        stamp = datetime.fromisoformat(record['verified_at_utc'])
+        if stamp.tzinfo is None or stamp.utcoffset() is None:
+            raise VerifiedSettlementBlocked('Naive independent usage timestamp')
+        return _digest(record)
     raise VerifiedSettlementBlocked('Unsupported evidence source')
 
 
@@ -183,6 +204,16 @@ def reconcile_verified_historical(*, provider_path=DEFAULT_PATH):
                         raise VerifiedSettlementBlocked('Invalid renewal attempt')
                     if a.get('status') == 'VERIFIED':
                         candidates.append((a.get('request_id'), 'VERIFIED_RENEWAL'))
+            independent_path = provider.parent / 'independent_usage_recovery.json'
+            if independent_path.exists():
+                independent = _read(independent_path)
+                if independent.get('version') != 1 or type(independent.get('attempts')) is not list:
+                    raise VerifiedSettlementBlocked('Invalid independent usage journal')
+                for e in independent['attempts']:
+                    if type(e) is not dict:
+                        raise VerifiedSettlementBlocked('Invalid independent usage record')
+                    if e.get('status') == 'VERIFIED':
+                        candidates.append((e.get('request_id'), 'INDEPENDENT_USAGE_RECOVERY'))
             proven = []
             seen_ids = set()
             # Verify every eligible source BEFORE performing any settlement.
