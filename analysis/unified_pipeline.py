@@ -36,6 +36,7 @@ class UnifiedTradingPipeline:
             ml_output=ml_out,
             latest_features=latest_features,
             data_fresh=len(candles) >= 40,
+            timestamp_str=str(candles[-1].get("timestamp", "")),
         )
         decision["ml_breakdown"] = ml_out["model_breakdown"]
         decision["latest_price"] = float(candles[-1]["close"])

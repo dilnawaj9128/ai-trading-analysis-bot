@@ -1,4 +1,5 @@
 from __future__ import annotations
+from strategy.session_filter import MarketSessionFilter
 
 from typing import Any, Dict, List
 
@@ -33,6 +34,8 @@ class DecisionRiskEngine:
         ml_output: Dict[str, Any],
         latest_features: Dict[str, float],
         data_fresh: bool = True,
+        timestamp_str: str | None = None,
+        enforce_session: bool = True,
     ) -> Dict[str, Any]:
         reasons: List[str] = []
         regime = self.classify_regime(latest_features)
@@ -40,6 +43,19 @@ class DecisionRiskEngine:
         prob_down = float(ml_output["prob_down"])
         rsi_norm = float(latest_features.get("rsi_norm", 0.0))
         macd_hist = float(latest_features.get("macd_hist", 0.0))
+
+        # 0. Time-of-day / session filter
+        if enforce_session:
+            in_session, session_msg = MarketSessionFilter.check_session(symbol, timestamp_str)
+            if not in_session:
+                return {
+                    "symbol": symbol,
+                    "expiry_minutes": expiry_minutes,
+                    "signal": "NO TRADE",
+                    "confidence": round(max(prob_up, prob_down), 4),
+                    "regime": regime,
+                    "reasons": [session_msg],
+                }
 
         # 1. Data freshness guard
         if not data_fresh:
