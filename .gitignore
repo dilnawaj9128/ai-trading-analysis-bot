@@ -62,3 +62,5 @@ __pycache__/
 *.sqlite
 *.sqlite3
 data/
+data/research/*.json
+models/saved/*.joblib
