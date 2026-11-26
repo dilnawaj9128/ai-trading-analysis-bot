@@ -1,0 +1,32 @@
+[
+  {
+    "timeframe": 5,
+    "selected_model": "XGBoost",
+    "holdout_accuracy_pct": 49.29,
+    "baseline_pct": 49.92,
+    "threshold": null,
+    "filtered_predictions": 0,
+    "filtered_accuracy_pct": null,
+    "deployment_approved": false
+  },
+  {
+    "timeframe": 10,
+    "selected_model": "XGBoost",
+    "holdout_accuracy_pct": 49.68,
+    "baseline_pct": 49.33,
+    "threshold": null,
+    "filtered_predictions": 0,
+    "filtered_accuracy_pct": null,
+    "deployment_approved": false
+  },
+  {
+    "timeframe": 15,
+    "selected_model": "XGBoost",
+    "holdout_accuracy_pct": 48.96,
+    "baseline_pct": 49.42,
+    "threshold": null,
+    "filtered_predictions": 0,
+    "filtered_accuracy_pct": null,
+    "deployment_approved": false
+  }
+]
