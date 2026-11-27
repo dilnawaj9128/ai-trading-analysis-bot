@@ -105,13 +105,17 @@ def main():
     parser.add_argument(
         "--stage47-dir", type=Path, default=DEFAULT_STAGE47
     )
+    parser.add_argument(
+        "--nifty-dir", type=Path, default=NIFTY_DATA,
+        help="Directory containing the NIFTY monitor's latest.csv and predictions.db.",
+    )
     args = parser.parse_args()
 
     if not 1024 <= args.port <= 65535:
         parser.error("Port must be between 1024 and 65535")
 
     handler = make_dashboard_handler(
-        args.stage46_dir, args.stage47_dir
+        args.stage46_dir, args.stage47_dir, nifty_dir=args.nifty_dir
     )
     server = ThreadingHTTPServer(
         ("127.0.0.1", args.port), handler
