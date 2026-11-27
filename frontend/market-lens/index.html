@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Market Lens | Bot Analysis</title>
+<meta name="description" content="Private analysis workspace for NIFTY 50 and EUR/USD.">
+<link rel="stylesheet" href="/static/market-lens/style.css">
+<script defer src="/static/market-lens/app.js"></script>
+</head>
+<body>
+<div class="layout">
+<aside>
+  <div class="brand"><span class="logo">⌜⌁</span><div>Market Lens<small>BOT ANALYSIS</small></div></div>
+  <nav aria-label="Dashboard pages">
+    <button data-page="overview" aria-current="page"><span>▦</span> Overview</button>
+    <button data-page="journal"><span>▤</span> Signal Journal</button>
+    <button data-page="forward"><span>◴</span> Forward Results</button>
+    <button data-page="paper"><span>◇</span> Paper Trading</button>
+    <button data-page="health"><span>⊕</span> System Health</button>
+  </nav>
+  <div class="aside-foot"><span class="dot"></span> Analysis only</div>
+</aside>
+<main>
+<header class="top"><span>Workspace <b>/</b> <strong id="crumb">Overview</strong></span><button id="source" class="pill">◉ Connecting</button></header>
+<section id="overview">
+  <div class="heading"><div><h1>Market Overview</h1><p>Completed candles and the bot’s latest analysis.</p></div><div class="control"><label for="market">Market</label><select id="market"><option value="NIFTY50">NIFTY 50</option><option value="EURUSD">EUR/USD</option></select></div></div>
+  <div class="toolbar"><div class="seg" id="mode" aria-label="View mode"><button data-mode="latest" aria-pressed="true">Latest</button><button data-mode="historical" aria-pressed="false">Inspect Historical</button></div><div class="horizon"><span>Prediction horizon</span><div class="seg" id="horizon" aria-label="Prediction horizon"><button data-min="1">1m</button><button data-min="5">5m</button><button data-min="15" aria-pressed="true">15m</button></div></div></div>
+  <div id="feedNotice" class="feed-notice" role="status" hidden></div>
+  <div id="historical" class="historical" hidden><label for="history">Completed candle</label><select id="history"></select><span>Times in IST</span></div>
+  <div class="overview-grid">
+    <article class="card signal" id="signalCard"><div class="card-top"><span class="eyebrow">BOT SIGNAL</span><span class="tag" id="signalSource">Demo analysis</span></div><div id="signal" class="signal-value">Unavailable</div><p id="reason"></p><div class="signal-meta"><div><small>Candle close</small><strong id="close"></strong></div><div><small>Outcome check</small><strong id="expiry"></strong></div><div><small>Candle status</small><strong id="completed"></strong></div></div></article>
+    <article class="card feed"><div class="card-top"><span class="eyebrow">DATA STATUS</span><span class="tag" id="quality"></span></div><div class="feed-main" id="provider"></div><dl><div><dt>Completed candles</dt><dd id="count"></dd></div><div><dt>Latest data age</dt><dd id="age"></dd></div><div><dt id="missingLabel">Missing candles</dt><dd id="missing"></dd></div></dl></article>
+    <article class="card chart-card"><div class="card-top"><div><h2>Price action</h2><p id="chartSubtitle"></p></div><div class="chart-price" id="price"></div></div><div class="legend"><span class="ema20">EMA 20</span><span class="ema50">EMA 50</span><span class="levels">Support / resistance</span></div><div class="chart-wrap"><canvas id="chart" aria-label="Candlestick chart. Use Inspect Historical to select a candle with the keyboard."></canvas></div><p class="chart-help">Select a candle to inspect its analysis.</p></article>
+    <article class="card indicators"><div class="card-top"><h2>Indicators</h2><span class="tag">Completed candle</span></div><dl id="indicatorList"></dl><div class="pattern"><small>CANDLESTICK PATTERN</small><strong id="pattern"></strong></div></article>
+  </div>
+</section>
+<section id="detail" hidden></section>
+<footer>Market Lens <span>·</span> IST (UTC+05:30)</footer>
+</main>
+</div>
+<dialog id="dataDialog"><form method="dialog" class="dialog-head"><h2>Data source</h2><button aria-label="Close dialog">×</button></form><section id="liveSetup">
+<h3>NIFTY 50 · Upstox</h3>
+<p>Market Lens reads the running bot’s completed-candle feed every 30 seconds. Start the NIFTY live monitor if the feed is waiting for data.</p>
+<button id="connectLive" type="button">Use bot feed</button>
+<p id="liveStatus" role="status"></p>
+</section>
+<h3>Import a snapshot</h3>
+<p>Load a completed-candle snapshot from your bot. The file stays in this browser session.</p><label for="snapshot">Bot snapshot (.json)</label><input type="file" id="snapshot" accept=".json,application/json"><details><summary>Snapshot format</summary><p>Use a <code>markets</code> object keyed by <code>NIFTY50</code> or <code>EURUSD</code>. Each market has <code>candles</code> with <code>time</code> (ISO close time with timezone), <code>open</code>, <code>high</code>, <code>low</code>, <code>close</code>, and <code>completed: true</code>.</p><p>Optional <code>signals</code> entries use the same <code>time</code>, an integer <code>horizon</code> of 1, 5, or 15, <code>signal</code>, <code>reason</code>, <code>origin</code> (recorded or recomputed), and <code>outcome</code> (WIN, LOSS, PUSH or PENDING).</p><p>Optional market fields include <code>provider</code>, <code>quality</code>, <code>missing</code>, and <code>paperTrades</code>. Optional top-level fields are <code>tests</code> and <code>stage</code>.</p><button id="sample" type="button">Download example JSON</button></details><p id="importStatus" role="status"></p><button id="reset" type="button">Use demo data</button></dialog>
+</body>
+</html>

@@ -13,10 +13,15 @@ from backend.stage48_api import (
 )
 
 FRONTEND = PROJECT_ROOT / "frontend"
+NIFTY_DATA = PROJECT_ROOT / "data" / "research" / "nifty50" / "live"
 
 ASSETS = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/dashboard": ("index.html", "text/html; charset=utf-8"),
+    "/market-lens": ("market-lens/index.html", "text/html; charset=utf-8"),
+    "/market-lens/": ("market-lens/index.html", "text/html; charset=utf-8"),
+    "/static/market-lens/style.css": ("market-lens/style.css", "text/css; charset=utf-8"),
+    "/static/market-lens/app.js": ("market-lens/app.js", "application/javascript; charset=utf-8"),
     "/static/style.css": ("style.css", "text/css; charset=utf-8"),
     "/static/app.js": (
         "app.js", "application/javascript; charset=utf-8"
@@ -30,7 +35,8 @@ def static_asset(path):
 
 
 def make_dashboard_handler(stage46_dir=DEFAULT_STAGE46,
-                           stage47_dir=DEFAULT_STAGE47):
+                           stage47_dir=DEFAULT_STAGE47, *,
+                           nifty_dir=NIFTY_DATA):
     APIHandler = make_handler(stage46_dir, stage47_dir)
 
     class DashboardHandler(APIHandler):
@@ -41,6 +47,12 @@ def make_dashboard_handler(stage46_dir=DEFAULT_STAGE46,
 
             if parsed.query and asset is None:
                 self.send_json(404, {"error": "NOT_FOUND"})
+                return
+
+            if parsed.path == "/api/nifty":
+                from backend.nifty_dashboard import build_nifty_snapshot
+
+                self.send_json(200, build_nifty_snapshot(nifty_dir))
                 return
 
             if asset is None:
@@ -109,6 +121,7 @@ def main():
         f"Dashboard: http://127.0.0.1:{args.port}/",
         flush=True
     )
+    print(f"Market Lens: http://127.0.0.1:{args.port}/market-lens", flush=True)
     print(
         "Stage 49: LOCAL / READ ONLY / NO TRADE",
         flush=True
