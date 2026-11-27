@@ -123,3 +123,61 @@ def test_http_route_and_missing_data_do_not_create_a_database(tmp_path):
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_closed_session_refresh_uses_newer_upstox_candles(monkeypatch, monitor_data):
+    from backend.nifty_upstox import UpstoxMinuteFeed
+
+    calls = []
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {"status": "success", "data": {"candles": [
+                ["2026-11-26T15:30:00+05:30", 10, 12, 9, 999, 0, 0],
+                ["2026-11-26T15:29:00+05:30", 10, 12, 9, 11, 0, 0],
+                ["2026-11-26T15:28:00+05:30", 10, 12, 9, 10, 0, 0],
+            ]}}
+
+    def get(url, **kwargs):
+        calls.append(url)
+        assert kwargs["headers"]["Authorization"] == "Bearer test-token"
+        assert not kwargs["allow_redirects"]
+        return Response()
+
+    monkeypatch.setattr("backend.nifty_upstox.requests.get", get)
+    clock = NOW.replace(hour=17)
+    feed = UpstoxMinuteFeed("test-token")
+    result = build_nifty_snapshot(monitor_data, now=clock, upstox=feed)
+    assert result["candle_source"] == "Direct Upstox candles"
+    assert result["state"] == "MARKET CLOSED"
+    assert result["quality"]["latest_completed_close_utc"] == "2026-11-26T10:00:00+00:00"
+    assert [candle[4] for candle in result["candles"]] == [10, 11]
+    assert not result["behind_session"]
+    assert result["signals"][5]["label"] == "NO TRADE"
+    build_nifty_snapshot(monitor_data, now=clock + timedelta(seconds=30), upstox=feed)
+    assert len(calls) == 1
+
+
+def test_upstox_error_preserves_snapshot_and_surfaces_feed_lag(monkeypatch, monitor_data):
+    from types import SimpleNamespace
+
+    from backend.nifty_upstox import UpstoxMinuteFeed
+
+    calls = []
+
+    def get(url, **kwargs):
+        calls.append(url)
+        return SimpleNamespace(status_code=401)
+
+    monkeypatch.setattr("backend.nifty_upstox.requests.get", get)
+    clock = NOW.replace(hour=17)
+    feed = UpstoxMinuteFeed("test-token")
+    result = build_nifty_snapshot(monitor_data, now=clock, upstox=feed)
+    assert result["candle_source"] == "Monitor snapshot"
+    assert result["behind_session"]
+    assert result["refresh_note"] == "Upstox rejected the access token"
+    assert result["quality"]["latest_completed_close_utc"] == "2026-11-26T06:00:00+00:00"
+    build_nifty_snapshot(monitor_data, now=clock + timedelta(seconds=30), upstox=feed)
+    assert len(calls) == 1

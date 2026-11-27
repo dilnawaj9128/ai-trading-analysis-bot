@@ -11,3 +11,7 @@ dialog h3{font-size:1rem;margin:.8rem 0 .2rem}
 dialog ol{padding-left:1.35rem;color:var(--muted);font-size:.9rem}
 dialog li{padding:.12rem 0}
 dialog a{color:var(--cyan)}
+
+.chart-price small{display:block;font-size:.76rem;font-weight:500;color:var(--muted)}
+.ohlc{font-variant-numeric:tabular-nums}
+.feed-notice[data-tone=warning]{color:var(--amber);border-color:#674e35;background:#2b251f}

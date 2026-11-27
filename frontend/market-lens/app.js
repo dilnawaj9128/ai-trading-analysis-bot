@@ -88,7 +88,8 @@ function syncControls() {
   set("source", "◉ " + sourceLabel());
   $("source").dataset.tone = live.connected ? "ok" : "";
   $("feedNotice").hidden = !live.active;
-  $("feedNotice").dataset.tone = live.connected ? "ok" : "";
+  $("feedNotice").dataset.tone = live.connected
+    ? marketData()?.behindSession ? "warning" : "ok" : "";
   set("feedNotice", state.market === "EURUSD" && live.connected
     ? "The bot live feed supplies NIFTY 50. EUR/USD is available through snapshot import."
     : live.status);
@@ -132,7 +133,7 @@ function render() {
       ? "Waiting for completed candles from the connected market."
       : "Load a snapshot for this market."));
   set("close", fmt(candle?.time));
-  set("expiry", fmt(outcomesAt));
+  set("expiry", ["UP", "DOWN"].includes(signal) ? fmt(outcomesAt) : "—");
   set("completed", candle ? "Completed" : "—");
   set("provider", data?.provider ?? "Unavailable");
   set("count", candles.length);
@@ -143,7 +144,11 @@ function render() {
     : data?.quality ?? "Quality unknown");
   set("missingLabel", live.active ? "Candle gaps" : "Missing candles");
   set("missing", data?.missing);
-  set("chartSubtitle", markets[state.market] + " · Completed candles · IST");
+  set("chartSubtitle", markets[state.market] + (live.active && state.market === "NIFTY50"
+    ? " · 1m candles · Chart times are candle opens (IST)" : " · Completed candles · IST"));
+  $("ohlc").hidden = !candle;
+  set("ohlc", candle ? ["open", "high", "low", "close"].map(key =>
+    key[0].toUpperCase() + " " + price(candle[key])).join("  ·  ") : "");
   set("price", price(candle?.close));
   const indicator = candle?.indicators ?? {};
   $("indicatorList").innerHTML = [
@@ -241,7 +246,7 @@ function drawChart() {
   ctx.setLineDash([]);
   ctx.fillStyle = "#a3b3c9";
   for (let index = 0; index < candles.length; index += Math.max(1, Math.ceil(candles.length / (width > 470 ? 5 : 3)))) {
-    ctx.fillText(clock.format(new Date(candles[index].time)), Math.max(5, x(index) - 14), height - 7);
+    ctx.fillText(clock.format(new Date(candles[index].openTime ?? candles[index].time)), Math.max(5, x(index) - 14), height - 7);
   }
   canvas.onclick = event => {
     const index = Math.floor((event.clientX - canvas.getBoundingClientRect().left - 8) / step);
@@ -378,6 +383,8 @@ function adaptNiftyFeed(payload, now = Date.now()) {
   }
   const quality = typeof payload.state === "string" ? payload.state : "Unknown";
   const market = { provider: payload.provider || "Upstox", quality, candles: [], signals: [], current: {} };
+  market.candleSource = payload.candle_source;
+  market.behindSession = payload.behind_session === true;
   const snapshot = { markets: { NIFTY50: market } };
   if (!payload.candles.length) return snapshot;
   market.candles = payload.candles.map(([openTime, open, high, low, close], index) => {
@@ -385,7 +392,7 @@ function adaptNiftyFeed(payload, now = Date.now()) {
     const analysis = payload.candle_analysis?.[index];
     const values = analysis?.indicators ?? {};
     return {
-      time: iso(Date.parse(openTime) + 60000), open, high, low, close, completed: true,
+      time: iso(Date.parse(openTime) + 60000), openTime, open, high, low, close, completed: true,
       indicators: {
         rsi: values.RSI_14, ema20: values.EMA_20, ema50: values.EMA_50,
         macd: values.MACD, atr: values.ATR_14, support: values.Support, resistance: values.Resistance
@@ -444,7 +451,14 @@ async function pollLive() {
     state.data = snapshot;
     live.connected = true;
     const data = snapshot.markets.NIFTY50;
-    live.status = "Upstox · " + data.quality + " · Checked " + fmt(payload.checked_at);
+    const lastClose = data.candles.at(-1)?.time;
+    const notes = [data.candleSource, data.quality];
+    if (lastClose) notes.push("Last candle closed " + fmt(lastClose));
+    if (data.behindSession && validDate(payload.expected_close)) {
+      notes.push("Feed behind (expected through " + fmt(payload.expected_close) + ")");
+    }
+    if (payload.refresh_note) notes.push(payload.refresh_note);
+    live.status = notes.filter(Boolean).join(" · ");
   } catch (error) {
     if (live.request !== request) return;
     live.connected = false;

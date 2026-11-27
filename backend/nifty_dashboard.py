@@ -2,16 +2,15 @@
 
 import sqlite3
 from contextlib import closing
-from datetime import datetime, time, timezone
+from datetime import datetime, timezone
 from math import isfinite
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from analysis.live_engine import analyze_live_candles
+from backend.nifty_upstox import CLOSE, IST, OPEN, expected_close
 from dashboard.real_data_mode import validate_ohlc
 
-IST = ZoneInfo("Asia/Kolkata")
 ONE_MINUTE = pd.Timedelta(minutes=1)
 HORIZONS = (5, 10, 15)
 OHLC = ("Open", "High", "Low", "Close")
@@ -24,19 +23,23 @@ DIRECTIONS = ("UP", "DOWN")
 
 def read_candles(path, now):
     if not path.is_file():
-        return "WAITING FOR DATA", [], [], {}
+        return None, {}, "WAITING FOR DATA"
 
     try:
         frame, quality = validate_ohlc(pd.read_csv(path), now=now, min_rows=1)
     except (OSError, ValueError, TypeError, KeyError, OverflowError):
-        return "INVALID CANDLE DATA", [], [], {}
+        return None, {}, "INVALID CANDLE DATA"
 
+    return frame, quality, None
+
+
+def candle_details(frame, gaps):
     candles = [
         [row.timestamp.isoformat(), *(float(getattr(row, name)) for name in OHLC)]
         for row in frame.tail(CANDLE_LIMIT).itertuples(index=False)
     ]
     candle_analysis = []
-    if len(frame) >= 60 and not quality["gaps"]:
+    if len(frame) >= 60 and not gaps:
         result = analyze_live_candles(frame)
         values = result["frame"].loc[:, list(INDICATORS)].tail(CANDLE_LIMIT)
         patterns = result["patterns"]["Pattern"].tail(CANDLE_LIMIT)
@@ -52,18 +55,7 @@ def read_candles(path, now):
             for row, pattern in zip(values.itertuples(index=False, name=None), patterns)
         ]
 
-    local = now.astimezone(IST)
-    in_session = local.weekday() < 5 and time(9, 15) <= local.time() < time(15, 30)
-    if not in_session:
-        state = "MARKET CLOSED"
-    elif quality["gaps"]:
-        state = "CANDLE GAPS"
-    elif quality["age_seconds"] > 120:
-        state = "STALE DATA"
-    else:
-        state = "LIVE DATA"
-
-    return state, candles, candle_analysis, quality
+    return candles, candle_analysis
 
 
 def research_record(row, now):
@@ -125,12 +117,37 @@ def read_predictions(path, now):
     }
 
 
-def build_nifty_snapshot(data_dir, *, now=None):
+def build_nifty_snapshot(data_dir, *, now=None, upstox=None):
     now = now or datetime.now(timezone.utc)
-    state, candles, candle_analysis, quality = read_candles(data_dir / "latest.csv", now)
-    predictions = read_predictions(data_dir / "predictions.db", now)
-    last_close = quality.get("latest_completed_close_utc")
+    frame, quality, missing_state = read_candles(data_dir / "latest.csv", now)
+    source = "Monitor snapshot" if frame is not None else None
+    note = None
+    if upstox is not None:
+        direct_frame, direct_quality, note = upstox.resolve(now, quality.get("latest_completed_close_utc"))
+        if direct_frame is not None and (frame is None or
+                pd.Timestamp(direct_quality["latest_completed_close_utc"]) >=
+                pd.Timestamp(quality["latest_completed_close_utc"])):
+            frame, quality, source = direct_frame, direct_quality, "Direct Upstox candles"
 
+    target = expected_close(now)
+    last_close = quality.get("latest_completed_close_utc")
+    behind = target is not None and (not last_close or pd.Timestamp(last_close) < target)
+    local = now.astimezone(IST)
+    in_session = local.weekday() < 5 and OPEN <= local.time() < CLOSE
+    if frame is None:
+        candles, candle_analysis, state = [], [], missing_state
+    else:
+        candles, candle_analysis = candle_details(frame, quality["gaps"])
+        if not in_session:
+            state = "MARKET CLOSED"
+        elif quality["gaps"]:
+            state = "CANDLE GAPS"
+        elif quality["age_seconds"] > 120:
+            state = "STALE DATA"
+        else:
+            state = "LIVE DATA"
+
+    predictions = read_predictions(data_dir / "predictions.db", now)
     signals = {}
     for horizon in HORIZONS:
         rows = predictions[horizon]["records"] if predictions is not None else []
@@ -152,6 +169,10 @@ def build_nifty_snapshot(data_dir, *, now=None):
         "checked_at": now.isoformat(),
         "state": state,
         "quality": quality,
+        "candle_source": source,
+        "expected_close": target.isoformat() if target is not None else None,
+        "behind_session": behind,
+        "refresh_note": note or ("Direct refresh needs an Upstox access token" if behind and upstox is None else None),
         "candles": candles,
         "candle_analysis": candle_analysis,
         "signals": signals,

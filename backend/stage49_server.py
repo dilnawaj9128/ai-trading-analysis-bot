@@ -1,6 +1,7 @@
 """Stage 49: localhost-only dashboard and existing Stage 48 API."""
 
 import argparse
+import os
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -36,7 +37,7 @@ def static_asset(path):
 
 def make_dashboard_handler(stage46_dir=DEFAULT_STAGE46,
                            stage47_dir=DEFAULT_STAGE47, *,
-                           nifty_dir=NIFTY_DATA):
+                           nifty_dir=NIFTY_DATA, upstox=None):
     APIHandler = make_handler(stage46_dir, stage47_dir)
 
     class DashboardHandler(APIHandler):
@@ -52,7 +53,7 @@ def make_dashboard_handler(stage46_dir=DEFAULT_STAGE46,
             if parsed.path == "/api/nifty":
                 from backend.nifty_dashboard import build_nifty_snapshot
 
-                self.send_json(200, build_nifty_snapshot(nifty_dir))
+                self.send_json(200, build_nifty_snapshot(nifty_dir, upstox=upstox))
                 return
 
             if asset is None:
@@ -109,13 +110,25 @@ def main():
         "--nifty-dir", type=Path, default=NIFTY_DATA,
         help="Directory containing the NIFTY monitor's latest.csv and predictions.db.",
     )
+    parser.add_argument("--upstox-env", type=Path, help="Read UPSTOX_ACCESS_TOKEN from this env file.")
     args = parser.parse_args()
 
     if not 1024 <= args.port <= 65535:
         parser.error("Port must be between 1024 and 65535")
 
+    token = os.environ.get("UPSTOX_ACCESS_TOKEN", "").strip()
+    if not token and args.upstox_env and args.upstox_env.is_file():
+        from dotenv import dotenv_values
+
+        token = (dotenv_values(args.upstox_env).get("UPSTOX_ACCESS_TOKEN") or "").strip()
+
+    upstox = None
+    if token:
+        from backend.nifty_upstox import UpstoxMinuteFeed
+
+        upstox = UpstoxMinuteFeed(token)
     handler = make_dashboard_handler(
-        args.stage46_dir, args.stage47_dir, nifty_dir=args.nifty_dir
+        args.stage46_dir, args.stage47_dir, nifty_dir=args.nifty_dir, upstox=upstox
     )
     server = ThreadingHTTPServer(
         ("127.0.0.1", args.port), handler
